@@ -1,0 +1,23 @@
+{
+    "servers": [
+        {
+            "profile": "   Ark Island   ",
+            "folder": "C:/Users/drome/Desktop/Test Ark server/steamapps/common/ARK Survival Ascended Dedicated Server",
+            "version": "358.24",
+            "install": "C:/Users/drome/Desktop/Test Ark server/steamapps/common/ARK Survival Ascended Dedicated Server"
+        },
+        {
+            "profile": "New Server",
+            "folder": "",
+            "version": "",
+            "install": ""
+        },
+        {
+            "profile": "New Server",
+            "folder": "",
+            "version": "",
+            "install": ""
+        }
+    ],
+    "steamcmd_path": ""
+}
