@@ -1,59 +1,65 @@
 ﻿import sys
 import os
 import uuid
+import json
 import subprocess
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QTabWidget, QWidget, QGridLayout,
-    QLabel, QPushButton, QLineEdit, QFileDialog, QMessageBox,
-    QSpacerItem, QSizePolicy
+    QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QGridLayout,
+    QLabel, QPushButton, QLineEdit, QFileDialog, QMessageBox, QAction
 )
 from PyQt5.QtCore import Qt
 
 class ServerTab(QWidget):
     """
-    A single tab that contains the ARK server settings.
-    Each tab starts empty, and users can import a server.
+    Ensures a top-aligned layout:
+      - A QVBoxLayout (aligned to top)
+      - Inside it, a QGridLayout for the 3 rows
     """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.server_folder = ""
         self.server_process = None
+        self.profile_id = str(uuid.uuid4())[:18]
         self.init_ui()
 
     def init_ui(self):
-        # Create a grid layout to match the ARK Server Manager layout
-        grid = QGridLayout(self)
-        grid.setSpacing(8)
-        grid.setContentsMargins(10, 10, 10, 10)
+        # 1) Outer layout (vertical), aligned top
+        outerLayout = QVBoxLayout(self)
+        outerLayout.setContentsMargins(10, 10, 10, 10)
+        outerLayout.setSpacing(5)
+        outerLayout.setAlignment(Qt.AlignTop)  # <<--- Force everything to the top
 
-        # Row 0: Profile ID and "Find" button
-        self.profile_id = str(uuid.uuid4())[:18]
+        # 2) Inner GridLayout for your 3 rows
+        grid = QGridLayout()
+        grid.setSpacing(5)
+        # We do NOT set alignment on the grid, let the outer layout handle it.
+
+        # Add the grid to the outer layout
+        outerLayout.addLayout(grid)
+
+        # Row 0: Profile ID, Profile, Buttons
         self.label_profile_id = QLabel(f"Profile ID: {self.profile_id}")
-        self.button_find = QPushButton("Find")
-
-        grid.addWidget(self.label_profile_id, 0, 0, 1, 1)
-        grid.addItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum), 0, 1)
-        grid.addWidget(self.button_find, 0, 2, 1, 1, alignment=Qt.AlignRight)
-
-        # Row 1: Profile name, Create Support Zip, Sync, Import, Start, RCON
         label_profile = QLabel("Profile:")
         self.edit_profile = QLineEdit("New Server")
 
+        self.button_find = QPushButton("Find")
         self.button_support = QPushButton("Create Support Zip")
         self.button_sync = QPushButton("Sync")
-        self.button_import = QPushButton("Import Server")
+        self.button_import = QPushButton("Import")
         self.button_start = QPushButton("Start")
         self.button_rcon = QPushButton("RCON")
 
-        grid.addWidget(label_profile, 1, 0)
-        grid.addWidget(self.edit_profile, 1, 1)
-        grid.addWidget(self.button_support, 1, 2)
-        grid.addWidget(self.button_sync, 1, 3)
-        grid.addWidget(self.button_import, 1, 4)
-        grid.addWidget(self.button_start, 1, 5)
-        grid.addWidget(self.button_rcon, 1, 6)
+        grid.addWidget(self.label_profile_id, 0, 0)
+        grid.addWidget(label_profile,         0, 1)
+        grid.addWidget(self.edit_profile,     0, 2, 1, 2)
+        grid.addWidget(self.button_find,      0, 4)
+        grid.addWidget(self.button_support,   0, 5)
+        grid.addWidget(self.button_sync,      0, 6)
+        grid.addWidget(self.button_import,    0, 7)
+        grid.addWidget(self.button_start,     0, 8)
+        grid.addWidget(self.button_rcon,      0, 9)
 
-        # Row 2: Installed Version & Installation Location
+        # Row 1: Installed Version & Installation Location
         label_version = QLabel("Installed Version:")
         self.edit_version = QLineEdit("")
         self.edit_version.setReadOnly(True)
@@ -61,143 +67,93 @@ class ServerTab(QWidget):
         label_install = QLabel("Installation Location:")
         self.edit_install = QLineEdit("")
         self.edit_install.setReadOnly(True)
-
         self.button_set_loc = QPushButton("Set Location")
 
-        grid.addWidget(label_version, 2, 0)
-        grid.addWidget(self.edit_version, 2, 1)
-        grid.addWidget(label_install, 2, 2)
-        grid.addWidget(self.edit_install, 2, 3, 1, 2)
-        grid.addWidget(self.button_set_loc, 2, 5)
+        grid.addWidget(label_version, 1, 0)
+        grid.addWidget(self.edit_version, 1, 1, 1, 2)
+        grid.addWidget(label_install, 1, 3)
+        grid.addWidget(self.edit_install, 1, 4, 1, 4)
+        grid.addWidget(self.button_set_loc, 1, 8)
 
-        # Row 3: Status, Availability, Players, Upgrade/Verify
+        # Row 2: Status, Availability, Players, Upgrade/Verify
         self.label_status = QLabel("Status: Stopped")
         self.label_availability = QLabel("Availability: Unavailable")
         self.label_players = QLabel("Players: 0 / 25")
         self.button_upgrade = QPushButton("Upgrade / Verify")
 
-        grid.addWidget(self.label_status, 3, 0)
-        grid.addWidget(self.label_availability, 3, 1)
-        grid.addWidget(self.label_players, 3, 2)
-        grid.addWidget(self.button_upgrade, 3, 6)
+        grid.addWidget(self.label_status,       2, 0, 1, 2)
+        grid.addWidget(self.label_availability, 2, 2, 1, 3)
+        grid.addWidget(self.label_players,      2, 5, 1, 2)
+        grid.addWidget(self.button_upgrade,     2, 7)
 
-        # Connect buttons
+        # Connect some example buttons
         self.button_import.clicked.connect(self.import_server)
         self.button_start.clicked.connect(self.start_server)
 
     def import_server(self):
-        """Opens a file dialog to select the ARK server folder and populates fields."""
         folder = QFileDialog.getExistingDirectory(self, "Select ARK Server Folder")
         if folder:
             self.server_folder = folder
             self.edit_profile.setText(os.path.basename(folder))
             self.edit_install.setText(folder)
-            self.edit_version.setText("358.24")  # Placeholder version
+            self.edit_version.setText("358.24")
 
     def start_server(self):
-        """Starts the ARK server process (placeholder logic)."""
         if not self.server_folder:
             QMessageBox.warning(self, "No Server Folder", "Please Import a server first.")
             return
-
-        server_exe = os.path.join(self.server_folder, "ShooterGame", "Binaries", "Win64", "ShooterGameServer.exe")
-        if not os.path.exists(server_exe):
+        exe = os.path.join(self.server_folder, "ShooterGame", "Binaries", "Win64", "ShooterGameServer.exe")
+        if not os.path.exists(exe):
             QMessageBox.critical(self, "Error", "Server executable not found.")
             return
-
         try:
-            self.server_process = subprocess.Popen([server_exe])
+            self.server_process = subprocess.Popen([exe])
             self.label_status.setText("Status: Running")
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
 
 class ArkServerManager(QMainWindow):
-    """
-    Main window with a QTabWidget. A "+" button in the corner adds a new ServerTab.
-    The first tab is always created by default so the window is never empty.
-    """
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ARK Server Manager")
         self.resize(1200, 700)
 
-        # Apply light theme to match the original ARK Server Manager screenshot
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #ebe7db;
-            }
-            QTabWidget::pane {
-                background: #f2eee4;
-                border: 1px solid #ccc;
-            }
-            QTabBar::tab {
-                background: #dcd8cc;
-                padding: 6px 12px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-                margin-right: 4px;
-            }
-            QTabBar::tab:selected {
-                background: #ffffff;
-                font-weight: bold;
-            }
-            QLabel {
-                font-size: 14px;
-            }
-            QLineEdit {
-                background-color: #ffffff;
-                border: 1px solid #ccc;
-                padding: 3px;
-            }
-            QPushButton {
-                background-color: #e0e0e0;
-                border: 1px solid #bfbfbf;
-                padding: 6px;
-                font-size: 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #d0d0d0;
-            }
-        """)
-
-        # Create the tab widget (start with one empty tab)
+        # Tab widget
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
-
         self.setCentralWidget(self.tabs)
 
-        # Create a "+" button to add new tabs
+        # Let the tab bar resize with text
+        tab_bar = self.tabs.tabBar()
+        tab_bar.setExpanding(False)
+        tab_bar.setElideMode(Qt.ElideNone)
+
+        # Plus button
         self.plus_button = QPushButton("+")
         self.plus_button.setFixedWidth(30)
         self.plus_button.clicked.connect(self.add_new_tab)
-
-        # Put the "+" in the top-right corner of the tab bar
         self.tabs.setCornerWidget(self.plus_button, Qt.TopRightCorner)
 
-        # Always start with one tab to prevent a blank screen
+        # Start with one tab
         self.add_new_tab()
 
     def add_new_tab(self):
-        """Creates a new tab that starts with the ARK Server layout but empty fields."""
         new_tab = ServerTab()
         index = self.tabs.addTab(new_tab, "New Server")
         self.tabs.setCurrentIndex(index)
 
     def close_tab(self, index):
-        """Closes the tab at 'index'. If only one tab remains, prevent closing."""
         if self.tabs.count() == 1:
             QMessageBox.warning(self, "Cannot Close", "At least one server tab must remain open.")
             return
-
         widget = self.tabs.widget(index)
         if widget:
             widget.deleteLater()
         self.tabs.removeTab(index)
 
 # ---------------------------
-# Application Entry Point
+# Main
 # ---------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
