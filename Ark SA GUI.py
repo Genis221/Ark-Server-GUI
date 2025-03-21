@@ -6,6 +6,12 @@ import subprocess
 import datetime
 import zipfile
 import psutil
+import requests
+import zipfile
+import shutil
+import getpass
+import ctypes
+
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QGridLayout,
@@ -121,18 +127,38 @@ class ServerTab(QWidget):
         self.grid.addWidget(self.edit_install, 1, 4, 1, 3)
         self.grid.addWidget(self.button_set_loc, 1, 7)
 
+        # Row 1.5: SteamCMD Location + Browse + Download
+        # Move SteamCMD below "Set Location" (Row 2)
+        label_steamcmd = QLabel("SteamCMD Location:")
+        self.edit_steamcmd = QLineEdit("")
+        # SteamCMD Location Row
+        self.button_browse_steamcmd = QPushButton("Browse")
+        self.button_download_steamcmd = QPushButton("Download SteamCMD")
+        self.button_download_steamcmd.clicked.connect(self.download_steamcmd)
+        
+        # Connect Browse button to function
+        self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
+
+        
+        # Update row position
+        self.grid.addWidget(label_steamcmd, 2, 0)
+        self.grid.addWidget(self.edit_steamcmd, 2, 1, 1, 3)
+        self.grid.addWidget(self.button_browse_steamcmd, 2, 4)
+        self.grid.addWidget(self.button_download_steamcmd, 2, 5)
+
+
         #
         # Row 2: Status, Availability, Players, Upgrade/Verify
         #
         self.label_status = QLabel("Status: Stopped")
         self.label_availability = QLabel("Availability: Unavailable")
         self.label_players = QLabel("Players: 0 / 25")
-        self.button_upgrade = QPushButton("Upgrade / Verify")
+        self.button_upgrade = QPushButton("Update / Verify")
 
-        self.grid.addWidget(self.label_status,       2, 0, 1, 2)
-        self.grid.addWidget(self.label_availability, 2, 2, 1, 3)
-        self.grid.addWidget(self.label_players,      2, 5, 1, 2)
-        self.grid.addWidget(self.button_upgrade,     2, 7)
+        self.grid.addWidget(self.label_status,       3, 0, 1, 2)
+        self.grid.addWidget(self.label_availability, 3, 2, 1, 3)
+        self.grid.addWidget(self.label_players,      3, 5, 1, 2)
+        self.grid.addWidget(self.button_upgrade,     3, 7)
 
         #
         # Row 3: Automatic Management (Scheduler)
@@ -165,7 +191,7 @@ class ServerTab(QWidget):
         time_layout.addWidget(self.checkbox_then_restart)
         scheduler_layout.addLayout(time_layout)
 
-        self.grid.addWidget(self.scheduler_group, 3, 0, 1, -1)
+        self.grid.addWidget(self.scheduler_group, 4, 0, 1, -1)
                
         # Row 4: Collapsible "Server Configuration" Section
         #
@@ -183,7 +209,7 @@ class ServerTab(QWidget):
         config_layout.addWidget(self.button_edit_gameusersettings_ini)
 
         self.config_group.setLayout(config_layout)
-        self.grid.addWidget(self.config_group, 4, 0, 1, -1)
+        self.grid.addWidget(self.config_group, 5, 0, 1, -1)
 
         # Connect buttons to open config editors
         self.button_edit_game_ini.clicked.connect(lambda: self.edit_config_file("Game.ini"))
@@ -194,6 +220,10 @@ class ServerTab(QWidget):
         self.button_import.clicked.connect(self.import_server)
         self.button_start.clicked.connect(self.start_server)
         self.button_backup.clicked.connect(self.backup_saves)
+        self.button_upgrade.clicked.connect(self.upgrade_server)
+        self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
+
+
 
     def edit_config_file(self, filename):
         """
@@ -269,6 +299,30 @@ class ServerTab(QWidget):
             self.popup.close()
         else:
             self.popup.setText(f"{message}\n\nThis message will close in {self.remaining_seconds} seconds.")
+
+    def auto_dismiss_message(self, title, message, timeout=10):
+         """
+         Displays a message box that automatically closes after 'timeout' seconds.
+         The countdown is displayed in the message.
+         """
+         dialog = QMessageBox(QMessageBox.Information, title, message)
+         dialog.setStandardButtons(QMessageBox.NoButton)  # Remove OK button
+     
+         def update_message():
+             nonlocal timeout
+             if timeout > 0:
+                 dialog.setText(f"{message}\nClosing in {timeout} seconds...")
+                 timeout -= 1
+             else:
+                 dialog.done(0)  # Close message box
+     
+         timer = QTimer(self)
+         timer.timeout.connect(update_message)
+         timer.start(1000)  # Update every second
+     
+         dialog.exec_()
+         timer.stop()  # Stop timer when done
+
 
 
     # -------------------------
@@ -393,8 +447,11 @@ class ServerTab(QWidget):
         def stop_then_update_then_restart():
             self.stop_server()
 
+            # If update checkbox is checked, show a single update message
             if self.checkbox_perform_update.isChecked():
-                self.update_server()
+                is_auto_update = True  # Flag to indicate this is from Automatic Management
+                self.upgrade_server(is_auto_update)
+
                 if self.checkbox_then_restart.isChecked():
                     QTimer.singleShot(12_000, finish_and_restart)
                 else:
@@ -413,31 +470,58 @@ class ServerTab(QWidget):
             self.server_process = None
             self.label_status.setText("Status: Stopped")
 
-    def update_server(self):
+    def upgrade_server(self, is_auto_update=False):
         """
-        Executes a SteamCMD update for the server.
-        Assumes SteamCMD is installed and accessible via PATH.
+        Runs SteamCMD to install/update ARK server files with proper execution.
+        Ensures administrator privileges and logs output.
         """
-        if not self.server_folder:
-            QMessageBox.warning(self, "No Server Folder", "Please import a server first.")
+        steamcmd_path = self.edit_steamcmd.text()
+        steamcmd_exe = os.path.join(steamcmd_path, "steamcmd.exe")
+    
+        if not os.path.exists(steamcmd_exe):
+            QMessageBox.critical(self, "Error", "SteamCMD.exe not found. Please set the correct path.")
             return
-
-        steamcmd_path = r"C:\Program Files (x86)\Steam\steamcmd.exe"  # Modify path if needed
-
-        if not os.path.exists(steamcmd_path):
-            QMessageBox.critical(self, "Error", "SteamCMD not found. Please install it.")
+    
+        server_path = self.edit_install.text()  # Path where ARK should be installed
+        if not server_path:
+            QMessageBox.critical(self, "Error", "No installation path set.")
             return
-
+    
+        # Define the full command
+        steamcmd_command = [
+            steamcmd_exe, "+login", "anonymous",
+            "+force_install_dir", server_path,
+            "+app_update", "2430930", "validate",
+            "+quit"
+        ]
+    
         try:
-            QMessageBox.information(self, "Server Update", "Updating server via SteamCMD...")
-            
-            # Run SteamCMD to update the ARK server
-            subprocess.run([steamcmd_path, "+login", "anonymous",
-                            "+force_install_dir", self.server_folder,
-                            "+app_update", "2430930", "validate", "+quit"],
-                           creationflags=subprocess.CREATE_NEW_CONSOLE)
+            # Show message box that will auto-dismiss
+            self.auto_dismiss_message("Update Running", "ARK Server is updating... Please wait.", 10)
+    
+            # Run with admin privileges to avoid Access Denied errors
+            process = subprocess.Popen(
+                steamcmd_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+    
+            # Read output in real-time to log progress
+            log_file = os.path.join(server_path, "steamcmd_update.log")
+            with open(log_file, "w") as log:
+                for line in iter(process.stdout.readline, ''):
+                    log.write(line)
+                    log.flush()
+    
+            process.wait()  # Wait for the update process to complete
+    
+            self.auto_dismiss_message("Update Complete", "ARK Server update finished successfully!", 10)
+    
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to update server: {str(e)}")
+            QMessageBox.critical(self, "Update Failed", f"Error: {str(e)}")
+
+
 
 
     # -------------------------
@@ -599,6 +683,58 @@ class ServerTab(QWidget):
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to stop the server: {str(e)}")
+
+    def browse_steamcmd_location(self):
+        """
+        Opens a file dialog to allow the user to select the SteamCMD installation folder.
+        Ensures only one dialog appears.
+        """
+        if hasattr(self, 'steamcmd_dialog_open') and self.steamcmd_dialog_open:
+            return  # Prevents multiple popups
+    
+        self.steamcmd_dialog_open = True  # Lock to prevent re-triggering
+        folder = QFileDialog.getExistingDirectory(self, "Select SteamCMD Folder")
+        if folder:
+            self.edit_steamcmd.setText(folder)  # Set the selected folder path
+    
+        self.steamcmd_dialog_open = False  # Unlock when finished
+
+
+
+    def download_steamcmd(self):
+        """
+        Downloads SteamCMD zip from Valve's servers, extracts it, and sets the path.
+        """
+        url = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip"
+        save_path = os.path.join(os.path.expanduser("~"), "Documents", "SteamCMD")
+    
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)  # Ensure the directory exists
+    
+        zip_path = os.path.join(save_path, "steamcmd.zip")
+    
+        try:
+            # Download the file
+            self.button_download_steamcmd.setText("Downloading...")
+            response = requests.get(url, stream=True)
+            with open(zip_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=1024):
+                    if chunk:
+                        f.write(chunk)
+    
+            # Extract the ZIP file
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(save_path)
+    
+            os.remove(zip_path)  # Delete the ZIP after extraction
+            self.edit_steamcmd.setText(save_path)  # Set the extracted path
+    
+            QMessageBox.information(self, "Download Complete", f"SteamCMD downloaded to: {save_path}")
+            self.button_download_steamcmd.setText("Download SteamCMD")
+    
+        except Exception as e:
+            QMessageBox.critical(self, "Download Failed", str(e))
+            self.button_download_steamcmd.setText("Download SteamCMD")
 
 
 
