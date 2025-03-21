@@ -388,7 +388,7 @@ class ServerTab(QWidget):
             if self.checkbox_then_restart.isChecked():
                 self.start_server()
 
-            show_countdown_dialog("Server has shut down and restarted.")
+            show_countdown_dialog("Server has restarted.")
 
         def stop_then_update_then_restart():
             self.stop_server()
