@@ -5,11 +5,12 @@ import uuid
 import subprocess
 import datetime
 import zipfile
+import psutil
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QGridLayout,
     QHBoxLayout, QLabel, QPushButton, QLineEdit, QFileDialog, QMessageBox, QAction,
-    QGroupBox, QCheckBox, QTimeEdit
+    QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout
 )
 from PyQt5.QtCore import Qt, QTimer, QTime, QDate
 
@@ -44,6 +45,7 @@ class ServerTab(QWidget):
       - Row 1: Installed Version & Installation Location
       - Row 2: Status, Availability, Players, Upgrade/Verify
       - Row 3: Automatic Management (Scheduler) group box
+      - Row 4: Collapsible "Server Configuration" Section
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -86,12 +88,17 @@ class ServerTab(QWidget):
         self.button_backup = QPushButton("Backup")
 
         # Add them all in one row
+        # Add them all in one row with Start and Import swapped
         row0Layout.addWidget(label_profile)
         row0Layout.addWidget(self.edit_profile)
-        row0Layout.addWidget(self.button_import)
-        row0Layout.addWidget(self.button_start)
+        row0Layout.addWidget(self.button_start)   # Start button now comes first
+        row0Layout.addWidget(self.button_import)  # Then Import button
         row0Layout.addWidget(self.button_rcon)
         row0Layout.addWidget(self.button_backup)
+
+        # Set initial style of the Start button to green
+        self.button_start.setStyleSheet("background-color: green; color: white;")
+
 
         # Place row0Layout in row 0 of the grid, spanning all columns
         self.grid.addLayout(row0Layout, 0, 0, 1, -1, alignment=Qt.AlignLeft)
@@ -147,7 +154,7 @@ class ServerTab(QWidget):
         time_layout = QHBoxLayout()
         time_layout.addWidget(QLabel("Shutdown at:"))
         self.shutdown_time_edit = QTimeEdit()
-        self.shutdown_time_edit.setDisplayFormat("HH:mm")
+        self.shutdown_time_edit.setDisplayFormat("hh:mm AP")
         self.shutdown_time_edit.setTime(QTime(8,0))  # default 08:00
         time_layout.addWidget(self.shutdown_time_edit)
 
@@ -159,11 +166,110 @@ class ServerTab(QWidget):
         scheduler_layout.addLayout(time_layout)
 
         self.grid.addWidget(self.scheduler_group, 3, 0, 1, -1)
+               
+        # Row 4: Collapsible "Server Configuration" Section
+        #
+        self.config_group = QGroupBox("Server Configuration")
+        self.config_group.setCheckable(True)  # Enables the collapsible effect
+        self.config_group.setChecked(False)  # Initially collapsed
+
+        config_layout = QVBoxLayout()
+
+        # Buttons to Load and Edit Configuration Files
+        self.button_edit_game_ini = QPushButton("Edit Game")
+        self.button_edit_gameusersettings_ini = QPushButton("Edit GameUserSettings")
+
+        config_layout.addWidget(self.button_edit_game_ini)
+        config_layout.addWidget(self.button_edit_gameusersettings_ini)
+
+        self.config_group.setLayout(config_layout)
+        self.grid.addWidget(self.config_group, 4, 0, 1, -1)
+
+        # Connect buttons to open config editors
+        self.button_edit_game_ini.clicked.connect(lambda: self.edit_config_file("Game.ini"))
+        self.button_edit_gameusersettings_ini.clicked.connect(lambda: self.edit_config_file("GameUserSettings.ini"))
+
 
         # Connect buttons
         self.button_import.clicked.connect(self.import_server)
         self.button_start.clicked.connect(self.start_server)
         self.button_backup.clicked.connect(self.backup_saves)
+
+    def edit_config_file(self, filename):
+        """
+        Opens the selected server configuration file in Notepad++.
+        If Notepad++ is not found, it defaults to regular Notepad.
+        If the file does not exist, it prompts the user to create it.
+        """
+        if not self.server_folder:
+            QMessageBox.warning(self, "No Server Folder", "Please import a server first.")
+            return
+
+        # Locate 'steamapps' in the path and extract everything from there onward
+        steamapps_index = self.server_folder.lower().find("steamapps")
+        if steamapps_index == -1:
+            QMessageBox.critical(self, "Error", "Could not find 'steamapps' in the server folder path.")
+            return
+
+        # Build the correct path for the config files
+        config_path = os.path.join(self.server_folder, "ShooterGame", "Saved", "Config", "WindowsServer", filename)
+
+        # Ensure directories exist
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+
+        # Check if the file exists
+        if not os.path.exists(config_path):
+            reply = QMessageBox.question(self, "File Not Found",
+                                         f"{filename} does not exist. Would you like to create it?",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                with open(config_path, "w") as f:
+                    f.write(f"; {filename} - ARK Server Configuration\n")  # Create with a comment header
+
+        # Debugging output
+        print(f"Attempting to open: {config_path}")  # Debugging check
+
+        # Ensure the file exists before attempting to open
+        if os.path.exists(config_path):
+            try:
+                # Define Notepad++ path (Modify this path if your Notepad++ is installed elsewhere)
+                notepad_plus_path = r"C:\Program Files\Notepad++\notepad++.exe"
+                
+                if os.path.exists(notepad_plus_path):
+                    subprocess.Popen([notepad_plus_path, config_path])  # Open in Notepad++
+                else:
+                    QMessageBox.warning(self, "Notepad++ Not Found", "Notepad++ not found, opening in default Notepad.")
+                    subprocess.Popen(["notepad.exe", config_path])  # Fallback to Notepad
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to open file: {str(e)}")
+        else:
+            QMessageBox.critical(self, "Error", f"Could not locate {filename} even after creation.")
+
+    def show_auto_closing_popup(self, message, timeout=10):
+        """
+        Shows a non-blocking popup with a countdown that auto-closes after X seconds.
+        """
+        self.popup = QMessageBox(self)
+        self.popup.setWindowTitle("Scheduled Task Complete")
+        self.remaining_seconds = timeout
+        self.popup.setText(f"{message}\n\nThis message will close in {self.remaining_seconds} seconds.")
+        self.popup.setStandardButtons(QMessageBox.NoButton)  # No close button
+        self.popup.setModal(False)
+        self.popup.show()
+
+        self.popup_timer = QTimer(self)
+        self.popup_timer.timeout.connect(lambda: self.update_popup_countdown(message))
+        self.popup_timer.start(1000)
+
+    def update_popup_countdown(self, message):
+        self.remaining_seconds -= 1
+        if self.remaining_seconds <= 0:
+            self.popup_timer.stop()
+            self.popup.close()
+        else:
+            self.popup.setText(f"{message}\n\nThis message will close in {self.remaining_seconds} seconds.")
+
 
     # -------------------------
     # Scheduler Timer
@@ -177,67 +283,128 @@ class ServerTab(QWidget):
 
     def check_scheduled_shutdown(self):
         """
-        Checks if it's one of the selected days and the current time >= scheduled time.
-        If so, triggers the 'shutdown' -> optional update -> optional restart.
-        This is a placeholder logic. You might want a more robust approach.
+        Checks if today is selected and current time is within 2 minutes of the scheduled shutdown time.
+        If so, triggers shutdown/update/restart once.
         """
         if not self.server_folder:
-            return  # no server to manage
-
+            return  # No server loaded
+    
         now = QTime.currentTime()
-        current_day = QDate.currentDate().dayOfWeek()  # 1=Mon, 7=Sun
-
-        # Map dayOfWeek to index in [Sun,Mon,Tue,Wed,Thu,Fri,Sat]
-        # By default, QDate().dayOfWeek() => Monday=1, Sunday=7
-        # We want [Sun=7, Mon=1, Tue=2 ...]
-        # Let's define a small helper:
-        def dayIndexToCheckBoxIndex(day_of_week):
-            # Sunday=7 => index=0
-            # Monday=1 => index=1
-            # ...
-            mapping = {7:0, 1:1, 2:2, 3:3, 4:4, 5:5, 6:6}
-            return mapping.get(day_of_week, -1)
-
-        idx = dayIndexToCheckBoxIndex(current_day)
-        if idx < 0:
-            return
-
-        # If today is not selected, reset the daily trigger
-        if not self.shutdown_days[idx].isChecked():
+        current_day = QDate.currentDate().dayOfWeek()  # 1 = Monday, 7 = Sunday
+    
+        # Map to checkbox index: [Sun, Mon, Tue, Wed, Thu, Fri, Sat]
+        day_mapping = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 0}
+        cb_index = day_mapping.get(current_day, -1)
+    
+        if cb_index < 0 or not self.shutdown_days[cb_index].isChecked():
             self.shutdown_triggered_today = False
             return
-
-        # Check if time is >= user-specified shutdown time
-        scheduled_time = self.shutdown_time_edit.time()
-        if now.hour() == scheduled_time.hour() and now.minute() == scheduled_time.minute():
-            # Only trigger once per day
+    
+        scheduled = self.shutdown_time_edit.time()
+    
+        # Allow a 2-minute grace window (e.g., trigger if now is within [scheduled, scheduled+2min])
+        if scheduled <= now <= scheduled.addSecs(120):
             if not self.shutdown_triggered_today:
                 self.shutdown_triggered_today = True
                 self.perform_scheduled_actions()
         else:
-            # If time has passed or not reached, we might reset if it's a new day
-            # This is simplistic logic. If the time is already past for the day, it won't trigger again until next day
-            pass
+            # Reset trigger if time window has passed
+            if now > scheduled.addSecs(120):
+                self.shutdown_triggered_today = False
+
 
     def perform_scheduled_actions(self):
         """
-        Placeholder logic for the actual scheduled actions:
-          - Stop server
-          - If "Perform update", do update
-          - If "Then restart", start server
+        Executes the scheduled shutdown:
+          1. Finds and terminates the correct ARK server process.
+          2. Optionally updates the server.
+          3. Optionally restarts the server after ensuring it's fully terminated.
         """
-        # 1) Stop server
-        self.stop_server()
+        if self.server_pid is not None:
+            try:
+                # Check if the process exists before attempting to kill it
+                for proc in psutil.process_iter(attrs=['pid', 'name']):
+                    if proc.info['pid'] == self.server_pid:
+                        proc = psutil.Process(self.server_pid)
+                        proc.terminate()  # Try to terminate first
+                        proc.wait(timeout=5)  # Wait 5 seconds for clean shutdown
 
-        # 2) If update checkbox is checked
-        if self.checkbox_perform_update.isChecked():
-            self.update_server()
+                        # If process is still running, forcefully kill it
+                        if proc.is_running():
+                            proc.kill()
 
-        # 3) If restart checkbox is checked
-        if self.checkbox_then_restart.isChecked():
-            self.start_server()
+                        # Reset process tracking
+                        self.server_process = None
+                        self.server_pid = None
 
-        QMessageBox.information(self, "Scheduled Action", "Scheduled shutdown/update/restart complete.")
+                        # Update UI
+                        self.label_status.setText("Status: Stopped")
+                        self.button_start.setText("Start")
+                        self.button_start.setStyleSheet("background-color: green; color: white;")
+                        msg = QMessageBox(self)
+                        msg.setIcon(QMessageBox.Information)
+                        msg.setWindowTitle("Scheduled Action")
+                        msg.setText("Scheduled shutdown/update/restart complete.")
+                        msg.setStandardButtons(QMessageBox.Ok)
+                        msg.show()
+                        
+                        # Auto-close after 10 seconds (10,000 ms)
+                        QTimer.singleShot(10_000, msg.accept)
+
+
+                        break  # Exit loop after finding and stopping the process
+
+            except psutil.NoSuchProcess:
+                self.server_process = None
+                self.server_pid = None
+                QMessageBox.warning(self, "Scheduled Action", "Server process not found, it may have already stopped.")
+            except psutil.AccessDenied:
+                QMessageBox.critical(self, "Error", "Access denied when trying to stop the process. Try running as administrator.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Unexpected error while stopping the server: {str(e)}")
+
+        def show_countdown_dialog(message):
+            self.countdown = 10
+            self.dialog = QMessageBox(self)
+            self.dialog.setWindowTitle("Scheduled Action Complete")
+            self.dialog.setText(f"{message}\n\nClosing in {self.countdown} seconds...")
+            self.dialog.setStandardButtons(QMessageBox.Ok)
+            self.dialog.setDefaultButton(QMessageBox.Ok)
+
+            def update_dialog():
+                self.countdown -= 1
+                if self.countdown <= 0:
+                    self.dialog.done(0)
+                    self.auto_close_timer.stop()
+                else:
+                    self.dialog.setText(f"{message}\n\nClosing in {self.countdown} seconds...")
+
+            self.auto_close_timer = QTimer()
+            self.auto_close_timer.timeout.connect(update_dialog)
+            self.auto_close_timer.start(1000)
+            self.dialog.show()
+
+        def finish_and_restart():
+            if self.checkbox_then_restart.isChecked():
+                self.start_server()
+
+            show_countdown_dialog("Server has shut down and restarted.")
+
+        def stop_then_update_then_restart():
+            self.stop_server()
+
+            if self.checkbox_perform_update.isChecked():
+                self.update_server()
+                if self.checkbox_then_restart.isChecked():
+                    QTimer.singleShot(12_000, finish_and_restart)
+                else:
+                    show_countdown_dialog("Server has shut down and updated.")
+            elif self.checkbox_then_restart.isChecked():
+                QTimer.singleShot(12_000, finish_and_restart)
+            else:
+                show_countdown_dialog("Server has shut down.")
+
+        stop_then_update_then_restart()
 
     def stop_server(self):
         """Placeholder for stopping the server. If you have a process handle, you can terminate it."""
@@ -247,9 +414,31 @@ class ServerTab(QWidget):
             self.label_status.setText("Status: Stopped")
 
     def update_server(self):
-        """Placeholder for updating the server (SteamCMD logic or similar)."""
-        # Real logic: run SteamCMD update, etc.
-        QMessageBox.information(self, "Update Server", "Updating server... (placeholder)")
+        """
+        Executes a SteamCMD update for the server.
+        Assumes SteamCMD is installed and accessible via PATH.
+        """
+        if not self.server_folder:
+            QMessageBox.warning(self, "No Server Folder", "Please import a server first.")
+            return
+
+        steamcmd_path = r"C:\Program Files (x86)\Steam\steamcmd.exe"  # Modify path if needed
+
+        if not os.path.exists(steamcmd_path):
+            QMessageBox.critical(self, "Error", "SteamCMD not found. Please install it.")
+            return
+
+        try:
+            QMessageBox.information(self, "Server Update", "Updating server via SteamCMD...")
+            
+            # Run SteamCMD to update the ARK server
+            subprocess.run([steamcmd_path, "+login", "anonymous",
+                            "+force_install_dir", self.server_folder,
+                            "+app_update", "2430930", "validate", "+quit"],
+                           creationflags=subprocess.CREATE_NEW_CONSOLE)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to update server: {str(e)}")
+
 
     # -------------------------
     # Backup Saves
@@ -300,18 +489,118 @@ class ServerTab(QWidget):
             self.edit_version.setText("358.24")  # Example placeholder
 
     def start_server(self):
+        """
+        Starts the ARK server using the 'Ark Server.bat' file from the Win64 directory.
+        If the server is already running, this function will stop it instead.
+        """
+        # If the server is already running, stop it
+        if self.server_process is not None:
+            self.stop_server()
+            return
+
         if not self.server_folder:
             QMessageBox.warning(self, "No Server Folder", "Please import a server first.")
             return
-        exe = os.path.join(self.server_folder, "ShooterGame", "Binaries", "Win64", "ShooterGameServer.exe")
-        if not os.path.exists(exe):
-            QMessageBox.critical(self, "Error", "Server executable not found.")
+
+        # Locate 'steamapps' in the path and extract everything from there onward
+        steamapps_index = self.server_folder.lower().find("steamapps")
+        if steamapps_index == -1:
+            QMessageBox.critical(self, "Error", "Could not find 'steamapps' in the server folder path.")
             return
+
+        # Construct the correct path for the Win64 folder
+        win64_path = os.path.join(self.server_folder, "ShooterGame", "Binaries", "Win64")
+
+        # Path to the batch file and executable
+        batch_file = os.path.join(win64_path, "Ark Server.bat")
+        exe_file = os.path.join(win64_path, "ArkAscendedServer.exe")
+
+        # Ensure the batch file exists before executing
+        if not os.path.exists(batch_file):
+            QMessageBox.critical(self, "Error", f"Batch file not found:\n{batch_file}")
+            return
+
+        # Ensure the server executable exists before executing
+        if not os.path.exists(exe_file):
+            QMessageBox.critical(self, "Error", f"Server executable not found:\n{exe_file}")
+            return
+
         try:
-            self.server_process = subprocess.Popen([exe])
+            # Start the batch file using subprocess, and track the process
+            self.server_process = subprocess.Popen(batch_file, cwd=win64_path, creationflags=subprocess.CREATE_NEW_CONSOLE)
+
+            # Save the process ID (PID)
+            self.server_pid = self.server_process.pid  # Track PID to ensure the correct process is stopped
+
+            # Update button and status
             self.label_status.setText("Status: Running")
+            self.button_start.setText("Stop")
+            self.button_start.setStyleSheet("background-color: red; color: white;")
         except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
+            QMessageBox.critical(self, "Error", f"Failed to start the server: {str(e)}")
+
+    def stop_server(self):
+        """
+        Stops the ARK server process by identifying the correct process running the executable.
+        Ensures the correct instance of 'ArkAscendedServer.exe' is stopped, even if multiple servers are running.
+        Shows a countdown popup after stopping.
+        """
+        if not self.server_folder:
+            QMessageBox.warning(self, "No Server Folder", "Please import a server first.")
+            return
+
+        # Locate the correct process based on the server folder path
+        win64_path = os.path.join(self.server_folder, "ShooterGame", "Binaries", "Win64")
+        exe_name = "ArkAscendedServer.exe"
+
+        try:
+            # Use tasklist to find processes running ArkAscendedServer.exe
+            result = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {exe_name}", "/FO", "CSV"],
+                                    capture_output=True, text=True)
+            
+            process_list = result.stdout.split("\n")
+            for line in process_list[1:]:  # Skip header
+                if exe_name in line:
+                    data = line.split(",")
+                    pid = data[1].strip('"')  # Extract the PID from CSV output
+
+                    # Terminate the process
+                    subprocess.run(["taskkill", "/PID", pid, "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            # Reset stored process info
+            self.server_process = None
+            self.server_pid = None
+
+            # Update UI
+            self.label_status.setText("Status: Stopped")
+            self.button_start.setText("Start")
+            self.button_start.setStyleSheet("background-color: green; color: white;")
+
+            # Countdown auto-close dialog
+            self.countdown = 10
+            self.dialog = QMessageBox(self)
+            self.dialog.setWindowTitle("Server Stopped")
+            self.dialog.setText(f"ARK server was stopped.\n\nClosing in {self.countdown} seconds...")
+            self.dialog.setStandardButtons(QMessageBox.Ok)
+            self.dialog.setDefaultButton(QMessageBox.Ok)
+
+            def update_dialog():
+                self.countdown -= 1
+                if self.countdown <= 0:
+                    self.dialog.done(0)
+                    self.auto_close_timer.stop()
+                else:
+                    self.dialog.setText(f"ARK server was stopped.\n\nClosing in {self.countdown} seconds...")
+
+            self.auto_close_timer = QTimer()
+            self.auto_close_timer.timeout.connect(update_dialog)
+            self.auto_close_timer.start(1000)
+            self.dialog.show()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to stop the server: {str(e)}")
+
+
 
     # -------------------------
     # For Saving/Loading Config
