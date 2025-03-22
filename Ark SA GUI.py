@@ -893,8 +893,21 @@ class ArkServerManager(QMainWindow):
 
         # Let the tab bar resize with text
         tab_bar = self.tabs.tabBar()
-        tab_bar.setExpanding(False)
-        tab_bar.setElideMode(Qt.ElideNone)
+        tab_bar.setExpanding(False)         # Tabs only as wide as their content
+        tab_bar.setElideMode(Qt.ElideNone)  # No "..." truncation
+        tab_bar.setUsesScrollButtons(True)  # Horizontal scroll if tabs exceed width
+        
+        self.tabs.setStyleSheet("""
+            QTabBar::tab {
+                padding: 7px 14px;    /* More space for text */
+                margin: 1px;
+                font-size: 11px;      /* Optional: bigger font */
+            }
+            QTabBar::tab:selected {
+                font-weight: bold;
+            }
+        """)
+
 
         # "+" button
         self.plus_button = QPushButton("+")
@@ -917,8 +930,7 @@ class ArkServerManager(QMainWindow):
             for info in servers:
                 new_tab = ServerTab()
                 new_tab.set_server_info(info)
-                index = self.tabs.addTab(new_tab, info.get("profile", "New Server"))
-                # Sync tab name with Profile field
+                index = self.tabs.addTab(new_tab, f"  {info.get('profile', 'New Server')}  ")
                 new_tab.edit_profile.textChanged.connect(
                     lambda _, tab=new_tab: self.sync_tab_name(tab)
                 )
@@ -937,7 +949,11 @@ class ArkServerManager(QMainWindow):
     def sync_tab_name(self, tab):
         i = self.tabs.indexOf(tab)
         if i >= 0:
-            self.tabs.setTabText(i, tab.edit_profile.text())
+            profile_name = tab.edit_profile.text()
+            # Add two spaces on each side
+            text_with_spaces = f"  {profile_name}  "
+            self.tabs.setTabText(i, text_with_spaces)
+
 
     def close_tab(self, index):
         if self.tabs.count() == 1:
