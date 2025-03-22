@@ -1,17 +1,14 @@
 ﻿import sys
 import os
 import json
-import uuid
 import subprocess
 import datetime
 import zipfile
 import psutil
 import requests
 import zipfile
-import shutil
-import getpass
-import ctypes
-
+import datetime
+import time
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QGridLayout,
@@ -43,6 +40,7 @@ class ConfigManager:
 # ---------------------------
 # 2) ServerTab
 # ---------------------------
+
 class ServerTab(QWidget):
     """
     Layout:
@@ -127,8 +125,7 @@ class ServerTab(QWidget):
         self.grid.addWidget(self.edit_install, 1, 4, 1, 3)
         self.grid.addWidget(self.button_set_loc, 1, 7)
 
-        # Row 1.5: SteamCMD Location + Browse + Download
-        # Move SteamCMD below "Set Location" (Row 2)
+        # Row 1.5: SteamCMD Location + Browse + Download        
         label_steamcmd = QLabel("SteamCMD Location:")
         self.edit_steamcmd = QLineEdit("")
         # SteamCMD Location Row
@@ -138,18 +135,14 @@ class ServerTab(QWidget):
         
         # Connect Browse button to function
         self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
-
-        
+       
         # Update row position
         self.grid.addWidget(label_steamcmd, 2, 0)
         self.grid.addWidget(self.edit_steamcmd, 2, 1, 1, 3)
         self.grid.addWidget(self.button_browse_steamcmd, 2, 4)
         self.grid.addWidget(self.button_download_steamcmd, 2, 5)
-
-
-        #
-        # Row 2: Status, Availability, Players, Upgrade/Verify
-        #
+        
+        # Row 2: Status, Availability, Players, Upgrade/Verify       
         self.label_status = QLabel("Status: Stopped")
         self.label_availability = QLabel("Availability: Unavailable")
         self.label_players = QLabel("Players: 0 / 25")
@@ -159,10 +152,8 @@ class ServerTab(QWidget):
         self.grid.addWidget(self.label_availability, 3, 2, 1, 3)
         self.grid.addWidget(self.label_players,      3, 5, 1, 2)
         self.grid.addWidget(self.button_upgrade,     3, 7)
-
-        #
-        # Row 3: Automatic Management (Scheduler)
-        #
+        
+        # Row 3: Automatic Management (Scheduler)        
         self.scheduler_group = QGroupBox("Automatic Management")
         scheduler_layout = QVBoxLayout()
         self.scheduler_group.setLayout(scheduler_layout)
@@ -194,7 +185,6 @@ class ServerTab(QWidget):
         self.grid.addWidget(self.scheduler_group, 4, 0, 1, -1)
                
         # Row 4: Collapsible "Server Configuration" Section
-        #
         self.config_group = QGroupBox("Server Configuration")
         self.config_group.setCheckable(True)  # Enables the collapsible effect
         self.config_group.setChecked(False)  # Initially collapsed
@@ -215,15 +205,12 @@ class ServerTab(QWidget):
         self.button_edit_game_ini.clicked.connect(lambda: self.edit_config_file("Game.ini"))
         self.button_edit_gameusersettings_ini.clicked.connect(lambda: self.edit_config_file("GameUserSettings.ini"))
 
-
         # Connect buttons
         self.button_import.clicked.connect(self.import_server)
         self.button_start.clicked.connect(self.start_server)
         self.button_backup.clicked.connect(self.backup_saves)
         self.button_upgrade.clicked.connect(self.upgrade_server)
         self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
-
-
 
     def edit_config_file(self, filename):
         """
@@ -323,11 +310,10 @@ class ServerTab(QWidget):
          dialog.exec_()
          timer.stop()  # Stop timer when done
 
-
-
     # -------------------------
     # Scheduler Timer
     # -------------------------
+
     def init_scheduler_timer(self):
         """Sets up a QTimer that checks every minute if it's time to shutdown/update/restart."""
         self.schedule_timer = QTimer(self)
@@ -470,24 +456,42 @@ class ServerTab(QWidget):
             self.server_process = None
             self.label_status.setText("Status: Stopped")
 
-    def upgrade_server(self, is_auto_update=False):
+    def upgrade_server(self, auto_update=False, on_complete=None):
         """
-        Runs SteamCMD to install/update ARK server files with proper execution.
-        Ensures administrator privileges and logs output.
+        Runs SteamCMD to install/update ARK server files while logging updates live.
+        Ensures administrator privileges, logs output in a structured folder, and delays execution.
+        Shows only auto-dismiss messages when auto_update is True.
         """
         steamcmd_path = self.edit_steamcmd.text()
         steamcmd_exe = os.path.join(steamcmd_path, "steamcmd.exe")
     
         if not os.path.exists(steamcmd_exe):
-            QMessageBox.critical(self, "Error", "SteamCMD.exe not found. Please set the correct path.")
+            if not auto_update:
+                QMessageBox.critical(self, "Error", "SteamCMD.exe not found. Please set the correct path.")
             return
     
-        server_path = self.edit_install.text()  # Path where ARK should be installed
+        server_path = self.edit_install.text()
         if not server_path:
-            QMessageBox.critical(self, "Error", "No installation path set.")
+            if not auto_update:
+                QMessageBox.critical(self, "Error", "No installation path set.")
             return
     
-        # Define the full command
+        # Set status to "Updating" in UI
+        self.label_status.setText("Status: Updating")
+        QApplication.processEvents()  # Immediately update UI
+    
+        # Delay to allow any prior dialogs to finish and give buffer time
+        time.sleep(10)
+    
+        profile_name = self.edit_profile.text().replace(" ", "_")
+        logs_folder = os.path.join(server_path, f"{profile_name}_Log")
+    
+        if not os.path.exists(logs_folder):
+            os.makedirs(logs_folder)
+    
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file_path = os.path.join(logs_folder, f"update_log_{timestamp}.log")
+    
         steamcmd_command = [
             steamcmd_exe, "+login", "anonymous",
             "+force_install_dir", server_path,
@@ -496,30 +500,41 @@ class ServerTab(QWidget):
         ]
     
         try:
-            # Show message box that will auto-dismiss
-            self.auto_dismiss_message("Update Running", "ARK Server is updating... Please wait.", 10)
+            # Show initial message only if NOT auto update
+            if not auto_update:
+                self.auto_dismiss_message("Upgrade Running", "ARK Server is upgrading...", 10)
     
-            # Run with admin privileges to avoid Access Denied errors
-            process = subprocess.Popen(
-                steamcmd_command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
+            with open(log_file_path, "w") as log_file:
+                process = subprocess.Popen(
+                    steamcmd_command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
     
-            # Read output in real-time to log progress
-            log_file = os.path.join(server_path, "steamcmd_update.log")
-            with open(log_file, "w") as log:
-                for line in iter(process.stdout.readline, ''):
-                    log.write(line)
-                    log.flush()
+                for line in iter(process.stdout.readline, ""):
+                    log_file.write(line)
+                    log_file.flush()
     
-            process.wait()  # Wait for the update process to complete
+                process.wait()
     
-            self.auto_dismiss_message("Update Complete", "ARK Server update finished successfully!", 10)
+            # Set final status back to "Stopped" after update
+            self.label_status.setText("Status: Stopped")
+    
+            # Show success message (only auto-dismiss if auto_update)
+            if auto_update:
+                self.auto_dismiss_message("Update Complete", f"Update finished!\nLog saved:\n{log_file_path}", 10)
+            else:
+                self.auto_dismiss_message("Update Complete", f"ARK Server update finished successfully!\nLogs saved at:\n{log_file_path}", 10)
+    
+            # If a restart or callback is passed in, call it after update is done
+            if on_complete:
+                on_complete()
     
         except Exception as e:
-            QMessageBox.critical(self, "Update Failed", f"Error: {str(e)}")
+            self.label_status.setText("Status: Stopped")  # Reset UI even on error
+            if not auto_update:
+                QMessageBox.critical(self, "Update Failed", f"Error: {str(e)}")
 
 
 
@@ -527,6 +542,7 @@ class ServerTab(QWidget):
     # -------------------------
     # Backup Saves
     # -------------------------
+
     def backup_saves(self):
         """
         Backs up the server's 'ShooterGame/Saved' folder into a ZIP named with a timestamp,
@@ -564,6 +580,7 @@ class ServerTab(QWidget):
     # -------------------------
     # Import / Start
     # -------------------------
+
     def import_server(self):
         folder = QFileDialog.getExistingDirectory(self, "Select ARK Server Folder")
         if folder:
@@ -625,64 +642,46 @@ class ServerTab(QWidget):
 
     def stop_server(self):
         """
-        Stops the ARK server process by identifying the correct process running the executable.
-        Ensures the correct instance of 'ArkAscendedServer.exe' is stopped, even if multiple servers are running.
-        Shows a countdown popup after stopping.
+        Stops the ARK server process and immediately updates the UI status/button.
+        Ensures it's responsive even before the process is actually terminated.
         """
         if not self.server_folder:
-            QMessageBox.warning(self, "No Server Folder", "Please import a server first.")
             return
-
-        # Locate the correct process based on the server folder path
-        win64_path = os.path.join(self.server_folder, "ShooterGame", "Binaries", "Win64")
+    
+        # Update GUI immediately
+        self.label_status.setText("Status: Stopped")
+        self.button_start.setText("Start")
+        self.button_start.setStyleSheet("background-color: green; color: white;")
+        QApplication.processEvents()  # Force UI refresh before continuing
+    
+        # Proceed to locate and terminate the process
         exe_name = "ArkAscendedServer.exe"
-
+    
         try:
-            # Use tasklist to find processes running ArkAscendedServer.exe
-            result = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {exe_name}", "/FO", "CSV"],
-                                    capture_output=True, text=True)
-            
+            result = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {exe_name}", "/FO", "CSV"],
+                capture_output=True, text=True
+            )
+    
             process_list = result.stdout.split("\n")
             for line in process_list[1:]:  # Skip header
                 if exe_name in line:
                     data = line.split(",")
-                    pid = data[1].strip('"')  # Extract the PID from CSV output
-
-                    # Terminate the process
-                    subprocess.run(["taskkill", "/PID", pid, "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            # Reset stored process info
+                    pid = data[1].strip('"')
+    
+                    # Terminate process
+                    subprocess.run(["taskkill", "/PID", pid, "/F"],
+                                   stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
+    
+            # Clear internal tracking
             self.server_process = None
             self.server_pid = None
-
-            # Update UI
-            self.label_status.setText("Status: Stopped")
-            self.button_start.setText("Start")
-            self.button_start.setStyleSheet("background-color: green; color: white;")
-
-            # Countdown auto-close dialog
-            self.countdown = 10
-            self.dialog = QMessageBox(self)
-            self.dialog.setWindowTitle("Server Stopped")
-            self.dialog.setText(f"ARK server was stopped.\n\nClosing in {self.countdown} seconds...")
-            self.dialog.setStandardButtons(QMessageBox.Ok)
-            self.dialog.setDefaultButton(QMessageBox.Ok)
-
-            def update_dialog():
-                self.countdown -= 1
-                if self.countdown <= 0:
-                    self.dialog.done(0)
-                    self.auto_close_timer.stop()
-                else:
-                    self.dialog.setText(f"ARK server was stopped.\n\nClosing in {self.countdown} seconds...")
-
-            self.auto_close_timer = QTimer()
-            self.auto_close_timer.timeout.connect(update_dialog)
-            self.auto_close_timer.start(1000)
-            self.dialog.show()
-
+    
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to stop the server: {str(e)}")
+            print(f"[ERROR] Failed to stop server: {e}")
+
+
 
     def browse_steamcmd_location(self):
         """
@@ -698,8 +697,6 @@ class ServerTab(QWidget):
             self.edit_steamcmd.setText(folder)  # Set the selected folder path
     
         self.steamcmd_dialog_open = False  # Unlock when finished
-
-
 
     def download_steamcmd(self):
         """
@@ -736,11 +733,10 @@ class ServerTab(QWidget):
             QMessageBox.critical(self, "Download Failed", str(e))
             self.button_download_steamcmd.setText("Download SteamCMD")
 
-
-
     # -------------------------
     # For Saving/Loading Config
     # -------------------------
+
     def get_server_info(self):
         """
         Return current server info, including scheduler settings,
@@ -753,6 +749,7 @@ class ServerTab(QWidget):
             "folder": self.server_folder,
             "version": self.edit_version.text(),
             "install": self.edit_install.text(),
+            "steamcmd": self.edit_steamcmd.text(),
             # Scheduler
             "shutdown_days": day_bools,
             "shutdown_time": self.shutdown_time_edit.time().toString("HH:mm"),
@@ -768,6 +765,7 @@ class ServerTab(QWidget):
         self.server_folder = info.get("folder", "")
         self.edit_version.setText(info.get("version", ""))
         self.edit_install.setText(info.get("install", ""))
+        self.edit_steamcmd.setText(info.get("steamcmd", ""))  # <-- Restore SteamCMD path
 
         # Scheduler
         day_bools = info.get("shutdown_days", [])
@@ -783,6 +781,7 @@ class ServerTab(QWidget):
 # ---------------------------
 # 3) Main Window with Config + "Save All"
 # ---------------------------
+
 class ArkServerManager(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -906,6 +905,7 @@ class ArkServerManager(QMainWindow):
 # ---------------------------
 # Main
 # ---------------------------
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = ArkServerManager()
