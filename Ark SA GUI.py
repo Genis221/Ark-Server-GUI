@@ -61,6 +61,7 @@ class ServerTab(QWidget):
 
         self.init_ui()
         self.init_scheduler_timer()
+        self.init_auto_start_timer()
 
     def init_ui(self):
         # Outer vertical layout (aligned top)
@@ -145,7 +146,7 @@ class ServerTab(QWidget):
         self.grid.addWidget(self.button_upgrade,     4, 7)
     
         # Row 5: Automatic Management
-        self.scheduler_group = QGroupBox("Automatic Management")
+        self.scheduler_group = QGroupBox("Automatic Shutdown")
         scheduler_layout = QVBoxLayout()
         self.scheduler_group.setLayout(scheduler_layout)
     
@@ -170,8 +171,37 @@ class ServerTab(QWidget):
         time_layout.addWidget(self.checkbox_then_restart)
     
         scheduler_layout.addLayout(time_layout)
-        self.grid.addWidget(self.scheduler_group, 5, 0, 1, -1)
+        self.grid.addWidget(self.scheduler_group, 6, 0, 1, -1)
     
+        # Row 5A: Auto Start Management
+        self.auto_start_group = QGroupBox("Automatic Start")
+        auto_start_layout = QVBoxLayout()
+        self.auto_start_group.setLayout(auto_start_layout)
+
+        # 5A: Days of the week
+        auto_days_layout = QHBoxLayout()
+        self.auto_start_days = []
+        for day in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]:
+            cb = QCheckBox(day)
+            auto_days_layout.addWidget(cb)
+            self.auto_start_days.append(cb)
+        auto_start_layout.addLayout(auto_days_layout)
+
+        # 5B: Start Time and optional update
+        auto_time_layout = QHBoxLayout()
+        auto_time_layout.addWidget(QLabel("Start Server at:"))
+        self.auto_start_time_edit = QTimeEdit()
+        self.auto_start_time_edit.setDisplayFormat("hh:mm AP")
+        self.auto_start_time_edit.setTime(QTime(9, 0))  # default 9:00 AM
+        auto_time_layout.addWidget(self.auto_start_time_edit)
+
+        self.checkbox_auto_start_update = QCheckBox("Perform update")
+        auto_time_layout.addWidget(self.checkbox_auto_start_update)
+        auto_start_layout.addLayout(auto_time_layout)
+
+        self.grid.addWidget(self.auto_start_group, 5, 0, 1, -1)
+
+
         # Row 6: Server Configuration Collapsible Section
         self.config_group = QGroupBox("Server Configuration")
         self.config_group.setCheckable(True)
@@ -185,7 +215,7 @@ class ServerTab(QWidget):
         config_layout.addWidget(self.button_edit_gameusersettings_ini)
     
         self.config_group.setLayout(config_layout)
-        self.grid.addWidget(self.config_group, 6, 0, 1, -1)
+        self.grid.addWidget(self.config_group, 7, 0, 1, -1)
     
         # Connect config buttons
         self.button_edit_game_ini.clicked.connect(lambda: self.edit_config_file("Game.ini"))
@@ -307,6 +337,38 @@ class ServerTab(QWidget):
         self.schedule_timer.setInterval(60_000)  # every 60 seconds
         self.schedule_timer.timeout.connect(self.check_scheduled_shutdown)
         self.schedule_timer.start()
+
+    def init_auto_start_timer(self):
+        self.auto_start_timer = QTimer(self)
+        self.auto_start_timer.setInterval(60_000)  # 1 minute
+        self.auto_start_timer.timeout.connect(self.check_auto_start)
+        self.auto_start_timer.start()
+
+    def check_auto_start(self):
+        if not self.server_folder:
+            return
+    
+        now = QTime.currentTime()
+        current_day = QDate.currentDate().dayOfWeek()  # 1=Mon, 7=Sun
+    
+        # Map day index to checkbox list index (Sun=7 -> 0, Mon=1 -> 1, ...)
+        index_map = {7: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6}
+        idx = index_map.get(current_day, -1)
+        if idx == -1 or not self.auto_start_days[idx].isChecked():
+            return
+    
+        target_time = self.auto_start_time_edit.time()
+        if now.hour() == target_time.hour() and now.minute() == target_time.minute():
+            if not hasattr(self, 'auto_start_triggered_today') or not self.auto_start_triggered_today:
+                self.auto_start_triggered_today = True
+    
+                if self.checkbox_auto_start_update.isChecked():
+                    self.upgrade_server(auto_update=True, on_complete=self.start_server)
+                else:
+                    self.start_server()
+        else:
+            self.auto_start_triggered_today = False
+
 
     def check_scheduled_shutdown(self):
         """
@@ -726,7 +788,9 @@ class ServerTab(QWidget):
             "install": self.edit_install.text(),
             "steamcmd": self.edit_steamcmd.text(),
             "launch_args": self.edit_launch_args.text(),
-            # Scheduler
+            "autostart_days": [cb.isChecked() for cb in self.auto_start_days],
+            "autostart_time": self.auto_start_time_edit.time().toString("HH:mm"),
+            "autostart_update": self.checkbox_auto_start_update.isChecked(),
             "shutdown_days": day_bools,
             "shutdown_time": self.shutdown_time_edit.time().toString("HH:mm"),
             "perform_update": self.checkbox_perform_update.isChecked(),
@@ -755,6 +819,19 @@ class ServerTab(QWidget):
         self.shutdown_time_edit.setTime(QTime(int(h), int(m)))
         self.checkbox_perform_update.setChecked(info.get("perform_update", False))
         self.checkbox_then_restart.setChecked(info.get("then_restart", False))
+
+        # Auto Start
+        autostart_bools = info.get("autostart_days", [])
+        for i, cb in enumerate(self.auto_start_days):
+            if i < len(autostart_bools):
+                cb.setChecked(autostart_bools[i])
+        
+        autostart_str = info.get("autostart_time", "08:00")
+        h, m = autostart_str.split(":")
+        self.auto_start_time_edit.setTime(QTime(int(h), int(m)))
+        
+        self.checkbox_auto_start_update.setChecked(info.get("autostart_update", False))
+
 
 # ---------------------------
 # 3) Main Window with Config + "Save All"
