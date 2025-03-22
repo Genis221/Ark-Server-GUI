@@ -68,97 +68,87 @@ class ServerTab(QWidget):
         outerLayout.setContentsMargins(10, 10, 10, 10)
         outerLayout.setSpacing(5)
         outerLayout.setAlignment(Qt.AlignTop)
-
+    
         # Inner grid for rows 1 and 2
         self.grid = QGridLayout()
         self.grid.setSpacing(5)
-
+    
         # Add the grid to the outer layout
         outerLayout.addLayout(self.grid)
-
-        #
-        # Row 0: Horizontal layout for Profile & buttons, left-aligned
-        #
+    
+        # Row 0: Profile & buttons
         row0Layout = QHBoxLayout()
         row0Layout.setSpacing(5)
-
+    
         label_profile = QLabel("Profile:")
         self.edit_profile = QLineEdit("New Server")
-
-        # Buttons: Import, Start, RCON, and now Backup
+    
         self.button_import = QPushButton("Import")
         self.button_start = QPushButton("Start")
         self.button_rcon = QPushButton("RCON")
         self.button_backup = QPushButton("Backup")
-
-        # Add them all in one row
-        # Add them all in one row with Start and Import swapped
+    
         row0Layout.addWidget(label_profile)
         row0Layout.addWidget(self.edit_profile)
-        row0Layout.addWidget(self.button_start)   # Start button now comes first
-        row0Layout.addWidget(self.button_import)  # Then Import button
+        row0Layout.addWidget(self.button_start)
+        row0Layout.addWidget(self.button_import)
         row0Layout.addWidget(self.button_rcon)
         row0Layout.addWidget(self.button_backup)
-
-        # Set initial style of the Start button to green
+    
         self.button_start.setStyleSheet("background-color: green; color: white;")
-
-
-        # Place row0Layout in row 0 of the grid, spanning all columns
         self.grid.addLayout(row0Layout, 0, 0, 1, -1, alignment=Qt.AlignLeft)
-
-        #
+    
         # Row 1: Installed Version & Installation Location
-        #
         label_version = QLabel("Installed Version:")
         self.edit_version = QLineEdit("")
         self.edit_version.setReadOnly(True)
-
+    
         label_install = QLabel("Installation Location:")
         self.edit_install = QLineEdit("")
         self.edit_install.setReadOnly(True)
         self.button_set_loc = QPushButton("Set Location")
-
+    
         self.grid.addWidget(label_version, 1, 0)
         self.grid.addWidget(self.edit_version, 1, 1, 1, 2)
         self.grid.addWidget(label_install, 1, 3)
         self.grid.addWidget(self.edit_install, 1, 4, 1, 3)
         self.grid.addWidget(self.button_set_loc, 1, 7)
-
-        # Row 1.5: SteamCMD Location + Browse + Download        
+    
+        # Row 2: SteamCMD Location + Browse + Download
         label_steamcmd = QLabel("SteamCMD Location:")
         self.edit_steamcmd = QLineEdit("")
-        # SteamCMD Location Row
         self.button_browse_steamcmd = QPushButton("Browse")
         self.button_download_steamcmd = QPushButton("Download SteamCMD")
         self.button_download_steamcmd.clicked.connect(self.download_steamcmd)
-        
-        # Connect Browse button to function
         self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
-       
-        # Update row position
+    
         self.grid.addWidget(label_steamcmd, 2, 0)
         self.grid.addWidget(self.edit_steamcmd, 2, 1, 1, 3)
         self.grid.addWidget(self.button_browse_steamcmd, 2, 4)
         self.grid.addWidget(self.button_download_steamcmd, 2, 5)
-        
-        # Row 2: Status, Availability, Players, Upgrade/Verify       
+    
+        # ✅ Row 3: Command Line Launch Arguments
+        label_launch_args = QLabel("Launch Arguments:")
+        self.edit_launch_args = QLineEdit()
+        self.grid.addWidget(label_launch_args, 3, 0)
+        self.grid.addWidget(self.edit_launch_args, 3, 1, 1, 6)
+    
+        # Row 4: Status, Availability, Players, Upgrade/Verify
         self.label_status = QLabel("Status: Stopped")
         self.label_availability = QLabel("Availability: Unavailable")
         self.label_players = QLabel("Players: 0 / 25")
         self.button_upgrade = QPushButton("Update / Verify")
-
-        self.grid.addWidget(self.label_status,       3, 0, 1, 2)
-        self.grid.addWidget(self.label_availability, 3, 2, 1, 3)
-        self.grid.addWidget(self.label_players,      3, 5, 1, 2)
-        self.grid.addWidget(self.button_upgrade,     3, 7)
-        
-        # Row 3: Automatic Management (Scheduler)        
+    
+        self.grid.addWidget(self.label_status,       4, 0, 1, 2)
+        self.grid.addWidget(self.label_availability, 4, 2, 1, 3)
+        self.grid.addWidget(self.label_players,      4, 5, 1, 2)
+        self.grid.addWidget(self.button_upgrade,     4, 7)
+    
+        # Row 5: Automatic Management
         self.scheduler_group = QGroupBox("Automatic Management")
         scheduler_layout = QVBoxLayout()
         self.scheduler_group.setLayout(scheduler_layout)
-
-        # 3A: Row for day checkboxes
+    
         days_layout = QHBoxLayout()
         self.shutdown_days = []
         for day in ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]:
@@ -166,51 +156,48 @@ class ServerTab(QWidget):
             days_layout.addWidget(cb)
             self.shutdown_days.append(cb)
         scheduler_layout.addLayout(days_layout)
-
-        # 3B: Time + update/restart checkboxes
+    
         time_layout = QHBoxLayout()
         time_layout.addWidget(QLabel("Shutdown at:"))
         self.shutdown_time_edit = QTimeEdit()
         self.shutdown_time_edit.setDisplayFormat("hh:mm AP")
-        self.shutdown_time_edit.setTime(QTime(8,0))  # default 08:00
+        self.shutdown_time_edit.setTime(QTime(8, 0))
         time_layout.addWidget(self.shutdown_time_edit)
-
+    
         self.checkbox_perform_update = QCheckBox("Perform update")
         self.checkbox_then_restart = QCheckBox("Then restart")
-
         time_layout.addWidget(self.checkbox_perform_update)
         time_layout.addWidget(self.checkbox_then_restart)
+    
         scheduler_layout.addLayout(time_layout)
-
-        self.grid.addWidget(self.scheduler_group, 4, 0, 1, -1)
-               
-        # Row 4: Collapsible "Server Configuration" Section
+        self.grid.addWidget(self.scheduler_group, 5, 0, 1, -1)
+    
+        # Row 6: Server Configuration Collapsible Section
         self.config_group = QGroupBox("Server Configuration")
-        self.config_group.setCheckable(True)  # Enables the collapsible effect
-        self.config_group.setChecked(False)  # Initially collapsed
-
+        self.config_group.setCheckable(True)
+        self.config_group.setChecked(False)
+    
         config_layout = QVBoxLayout()
-
-        # Buttons to Load and Edit Configuration Files
         self.button_edit_game_ini = QPushButton("Edit Game")
         self.button_edit_gameusersettings_ini = QPushButton("Edit GameUserSettings")
-
+    
         config_layout.addWidget(self.button_edit_game_ini)
         config_layout.addWidget(self.button_edit_gameusersettings_ini)
-
+    
         self.config_group.setLayout(config_layout)
-        self.grid.addWidget(self.config_group, 5, 0, 1, -1)
-
-        # Connect buttons to open config editors
+        self.grid.addWidget(self.config_group, 6, 0, 1, -1)
+    
+        # Connect config buttons
         self.button_edit_game_ini.clicked.connect(lambda: self.edit_config_file("Game.ini"))
         self.button_edit_gameusersettings_ini.clicked.connect(lambda: self.edit_config_file("GameUserSettings.ini"))
-
-        # Connect buttons
+    
+        # Connect main buttons
         self.button_import.clicked.connect(self.import_server)
         self.button_start.clicked.connect(self.start_server)
         self.button_backup.clicked.connect(self.backup_saves)
         self.button_upgrade.clicked.connect(self.upgrade_server)
         self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
+
 
     def edit_config_file(self, filename):
         """
@@ -384,7 +371,8 @@ class ServerTab(QWidget):
                         msg = QMessageBox(self)
                         msg.setIcon(QMessageBox.Information)
                         msg.setWindowTitle("Scheduled Action")
-                        msg.setText("Scheduled shutdown/update/restart complete.")
+                        profile_name = self.edit_profile.text()
+                        msg.setText(f"{profile_name} is being updated. Please wait for it to finish updating...")
                         msg.setStandardButtons(QMessageBox.Ok)
                         msg.show()
                         
@@ -481,7 +469,7 @@ class ServerTab(QWidget):
         QApplication.processEvents()  # Immediately update UI
     
         # Delay to allow any prior dialogs to finish and give buffer time
-        time.sleep(10)
+        time.sleep(3)
     
         profile_name = self.edit_profile.text().replace(" ", "_")
         logs_folder = os.path.join(server_path, f"{profile_name}_Log")
@@ -591,54 +579,41 @@ class ServerTab(QWidget):
 
     def start_server(self):
         """
-        Starts the ARK server using the 'Ark Server.bat' file from the Win64 directory.
+        Starts the ARK server using ArkAscendedServer.exe and custom command-line arguments.
         If the server is already running, this function will stop it instead.
         """
         # If the server is already running, stop it
         if self.server_process is not None:
             self.stop_server()
             return
-
+    
         if not self.server_folder:
             QMessageBox.warning(self, "No Server Folder", "Please import a server first.")
             return
-
-        # Locate 'steamapps' in the path and extract everything from there onward
-        steamapps_index = self.server_folder.lower().find("steamapps")
-        if steamapps_index == -1:
-            QMessageBox.critical(self, "Error", "Could not find 'steamapps' in the server folder path.")
-            return
-
-        # Construct the correct path for the Win64 folder
-        win64_path = os.path.join(self.server_folder, "ShooterGame", "Binaries", "Win64")
-
-        # Path to the batch file and executable
-        batch_file = os.path.join(win64_path, "Ark Server.bat")
-        exe_file = os.path.join(win64_path, "ArkAscendedServer.exe")
-
-        # Ensure the batch file exists before executing
-        if not os.path.exists(batch_file):
-            QMessageBox.critical(self, "Error", f"Batch file not found:\n{batch_file}")
-            return
-
-        # Ensure the server executable exists before executing
+    
+        # Construct the correct path to ArkAscendedServer.exe
+        exe_file = os.path.join(self.server_folder, "ShooterGame", "Binaries", "Win64", "ArkAscendedServer.exe")
+        
         if not os.path.exists(exe_file):
             QMessageBox.critical(self, "Error", f"Server executable not found:\n{exe_file}")
             return
-
+    
+        # Get command-line arguments from the GUI textbox
+        args = self.edit_launch_args.text().strip()
+        full_command = f'"{exe_file}" {args}'
+    
         try:
-            # Start the batch file using subprocess, and track the process
-            self.server_process = subprocess.Popen(batch_file, cwd=win64_path, creationflags=subprocess.CREATE_NEW_CONSOLE)
-
-            # Save the process ID (PID)
-            self.server_pid = self.server_process.pid  # Track PID to ensure the correct process is stopped
-
-            # Update button and status
+            # Start the server with command-line arguments
+            self.server_process = subprocess.Popen(full_command, shell=True)
+            self.server_pid = self.server_process.pid
+    
+            # Update UI
             self.label_status.setText("Status: Running")
             self.button_start.setText("Stop")
             self.button_start.setStyleSheet("background-color: red; color: white;")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to start the server: {str(e)}")
+
 
     def stop_server(self):
         """
@@ -750,6 +725,7 @@ class ServerTab(QWidget):
             "version": self.edit_version.text(),
             "install": self.edit_install.text(),
             "steamcmd": self.edit_steamcmd.text(),
+            "launch_args": self.edit_launch_args.text(),
             # Scheduler
             "shutdown_days": day_bools,
             "shutdown_time": self.shutdown_time_edit.time().toString("HH:mm"),
@@ -766,6 +742,8 @@ class ServerTab(QWidget):
         self.edit_version.setText(info.get("version", ""))
         self.edit_install.setText(info.get("install", ""))
         self.edit_steamcmd.setText(info.get("steamcmd", ""))  # <-- Restore SteamCMD path
+        self.edit_launch_args.setText(info.get("launch_args", ""))
+
 
         # Scheduler
         day_bools = info.get("shutdown_days", [])
