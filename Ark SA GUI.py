@@ -9,6 +9,8 @@ import requests
 import zipfile
 import datetime
 import time
+import glob
+import re
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QGridLayout,
@@ -16,6 +18,36 @@ from PyQt5.QtWidgets import (
     QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout
 )
 from PyQt5.QtCore import Qt, QTimer, QTime, QDate
+
+def get_ark_version_from_logs(server_folder):
+    """
+    Searches the newest log file in:
+      <server_folder>/ShooterGame/Saved/Logs
+    for a line like: "ARK Version: 61.74"
+    and returns the version number (e.g., "61.74").
+    Returns "Unknown" if no version is found.
+    """
+    logs_dir = os.path.join(server_folder, "ShooterGame", "Saved", "Logs")
+    if not os.path.isdir(logs_dir):
+        return "Unknown"
+    # Find all .log files in the folder
+    log_files = glob.glob(os.path.join(logs_dir, "*.log"))
+    if not log_files:
+        return "Unknown"
+    # Sort by modification time (newest first)
+    log_files.sort(key=os.path.getmtime, reverse=True)
+    newest_log = log_files[0]
+    # Use a case-insensitive regex to capture version numbers
+    pattern = re.compile(r"ARK Version:\s*([\d.]+)", re.IGNORECASE)
+    try:
+        with open(newest_log, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                match = pattern.search(line)
+                if match:
+                    return match.group(1)
+    except Exception as e:
+        print("Error reading log:", e)
+    return "Unknown"
 
 # ---------------------------
 # 1) ConfigManager
@@ -327,6 +359,14 @@ class ServerTab(QWidget):
          dialog.exec_()
          timer.stop()  # Stop timer when done
 
+    def update_ark_version_from_logs(self):
+        """
+        Reads the newest log file for a line with "ARK Version:" and updates the version field.
+        """
+        version = get_ark_version_from_logs(self.server_folder)
+        print("Parsed version from log:", version)  # For debugging
+        self.edit_version.setText(version)
+
     # -------------------------
     # Scheduler Timer
     # -------------------------
@@ -637,7 +677,11 @@ class ServerTab(QWidget):
             self.server_folder = folder
             self.edit_profile.setText(os.path.basename(folder))
             self.edit_install.setText(folder)
-            self.edit_version.setText("358.24")  # Example placeholder
+    
+            # Dynamically parse logs for Ark version
+            version = get_ark_version_from_logs(folder)
+            self.edit_version.setText(version)
+
 
     def start_server(self):
         """
@@ -673,6 +717,11 @@ class ServerTab(QWidget):
             self.label_status.setText("Status: Running")
             self.button_start.setText("Stop")
             self.button_start.setStyleSheet("background-color: red; color: white;")
+
+            # 1) Give ARK a moment to write logs
+            # 2) Then parse logs for "Ark Version: 61.74"
+            QTimer.singleShot(15_000, self.update_ark_version_from_logs)
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to start the server: {str(e)}")
 
