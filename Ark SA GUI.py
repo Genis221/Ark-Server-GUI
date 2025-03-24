@@ -8,6 +8,7 @@ import psutil
 import requests
 import zipfile
 import datetime
+import shutil
 import time
 import glob
 import re
@@ -15,9 +16,9 @@ import re
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QGridLayout,
     QHBoxLayout, QLabel, QPushButton, QLineEdit, QFileDialog, QMessageBox, QAction,
-    QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout
+    QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout, QComboBox
 )
-from PyQt5.QtCore import Qt, QTimer, QTime, QDate
+from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime
 
 def get_ark_version_from_logs(server_folder):
     """
@@ -48,6 +49,37 @@ def get_ark_version_from_logs(server_folder):
     except Exception as e:
         print("Error reading log:", e)
     return "Unknown"
+
+def copy_server_log_on_stop(server_folder, profile_name, log_dest_folder):
+    """
+    Copies the ShooterGame.log from the Saved\Logs folder, renames it using the profile name and timestamp,
+    and saves it in a profile-specific folder at the user-defined log destination.
+    """
+    if not server_folder or not log_dest_folder:
+        print("[ERROR] Missing server folder or log destination.")
+        return
+
+    # Path to the current ShooterGame log file
+    log_file_path = os.path.join(server_folder, "ShooterGame", "Saved", "Logs", "ShooterGame.log")
+    if not os.path.exists(log_file_path):
+        print(f"[ERROR] Log file not found: {log_file_path}")
+        return
+
+    # Format profile name and build destination folder
+    profile_folder_name = profile_name.strip().replace(" ", "_") + "_Logs"
+    full_dest_folder = os.path.join(log_dest_folder, profile_folder_name)
+    os.makedirs(full_dest_folder, exist_ok=True)
+
+    # Generate timestamped filename
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = f"{profile_name.strip().replace(' ', '_')}_log_{timestamp}.log"
+    dest_path = os.path.join(full_dest_folder, log_filename)
+
+    try:
+        shutil.copyfile(log_file_path, dest_path)
+        print(f"[INFO] Log saved to: {dest_path}")
+    except Exception as e:
+        print(f"[ERROR] Failed to copy log file: {e}")
 
 # ---------------------------
 # 1) ConfigManager
@@ -95,6 +127,16 @@ class ServerTab(QWidget):
         self.init_scheduler_timer()
         self.init_auto_start_timer()
 
+    def browse_backup_destination(self):
+        """
+        Opens a folder picker dialog for selecting a backup destination,
+        then stores it in self.edit_backup_dest.
+        """
+        folder = QFileDialog.getExistingDirectory(self, "Select Backup Destination")
+        if folder:
+            self.edit_backup_dest.setText(folder)
+
+
     def init_ui(self):
         # Outer vertical layout (aligned top)
         outerLayout = QVBoxLayout(self)
@@ -116,17 +158,13 @@ class ServerTab(QWidget):
         label_profile = QLabel("Profile:")
         self.edit_profile = QLineEdit("New Server")
     
-        self.button_import = QPushButton("Import")
         self.button_start = QPushButton("Start")
         self.button_rcon = QPushButton("RCON")
-        self.button_backup = QPushButton("Backup")
     
         row0Layout.addWidget(label_profile)
         row0Layout.addWidget(self.edit_profile)
         row0Layout.addWidget(self.button_start)
-        row0Layout.addWidget(self.button_import)
         row0Layout.addWidget(self.button_rcon)
-        row0Layout.addWidget(self.button_backup)
     
         self.button_start.setStyleSheet("background-color: green; color: white;")
         self.grid.addLayout(row0Layout, 0, 0, 1, -1, alignment=Qt.AlignLeft)
@@ -233,7 +271,6 @@ class ServerTab(QWidget):
 
         self.grid.addWidget(self.auto_start_group, 5, 0, 1, -1)
 
-
         # Row 6: Server Configuration Collapsible Section
         self.config_group = QGroupBox("Server Configuration")
         self.config_group.setCheckable(True)
@@ -247,18 +284,72 @@ class ServerTab(QWidget):
         config_layout.addWidget(self.button_edit_gameusersettings_ini)
     
         self.config_group.setLayout(config_layout)
-        self.grid.addWidget(self.config_group, 7, 0, 1, -1)
+        self.grid.addWidget(self.config_group, 8, 0, 1, -1)
     
         # Connect config buttons
         self.button_edit_game_ini.clicked.connect(lambda: self.edit_config_file("Game.ini"))
         self.button_edit_gameusersettings_ini.clicked.connect(lambda: self.edit_config_file("GameUserSettings.ini"))
     
         # Connect main buttons
-        self.button_import.clicked.connect(self.import_server)
         self.button_start.clicked.connect(self.start_server)
-        self.button_backup.clicked.connect(self.backup_saves)
         self.button_upgrade.clicked.connect(self.upgrade_server)
         self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
+
+        # Row 7: Automatic Backup
+        self.auto_backup_group = QGroupBox("Automatic Backup")
+        auto_backup_layout = QVBoxLayout()
+        self.auto_backup_group.setLayout(auto_backup_layout)
+        
+        # Backup Interval
+        interval_layout = QHBoxLayout()
+        interval_layout.addWidget(QLabel("Backup Interval:"))
+        self.backup_interval_combo = QComboBox()
+        self.backup_interval_combo.addItems([
+            "30 mins", "1 hr", "3 hrs", "6 hrs", "12 hrs", "24 hrs"
+        ])
+        interval_layout.addWidget(self.backup_interval_combo)
+        auto_backup_layout.addLayout(interval_layout)
+        
+        # Backup Destination
+        dest_layout = QHBoxLayout()
+        dest_layout.addWidget(QLabel("Backup Folder:"))
+        self.edit_backup_dest = QLineEdit("")
+        dest_layout.addWidget(self.edit_backup_dest)
+        self.button_browse_backup_dest = QPushButton("Browse")
+        dest_layout.addWidget(self.button_browse_backup_dest)
+        auto_backup_layout.addLayout(dest_layout)
+        self.button_browse_backup_dest.clicked.connect(self.browse_backup_destination)
+        
+        # Manual Backup Button
+        self.button_manual_backup = QPushButton("Backup Now")
+        auto_backup_layout.addWidget(self.button_manual_backup)
+        self.button_manual_backup.clicked.connect(self.perform_auto_backup)
+        
+        # Add the Auto Backup group to the grid
+        self.grid.addWidget(self.auto_backup_group, 7, 0, 1, -1)
+       
+        # Enable / Disable Auto Backup
+        self.checkbox_enable_backup = QCheckBox("Enable Auto Backup")
+        auto_backup_layout.addWidget(self.checkbox_enable_backup)
+        
+        # Place group box in grid
+        self.grid.addWidget(self.auto_backup_group, 7, 0, 1, -1)
+        
+        # Connect the Browse button
+        self.button_browse_backup_dest.clicked.connect(self.browse_backup_destination)
+
+        self.init_auto_backup_timer()
+
+        # Row: Log Location
+        label_log = QLabel("Log Location:")
+        self.edit_log_location = QLineEdit("")
+        self.button_browse_log = QPushButton("Browse")
+        self.button_browse_log.clicked.connect(self.browse_log_location)
+        
+        self.grid.addWidget(label_log, 9, 0)
+        self.grid.addWidget(self.edit_log_location, 9, 1, 1, 4)
+        self.grid.addWidget(self.button_browse_log, 9, 5)
+
 
 
     def edit_config_file(self, filename):
@@ -366,6 +457,43 @@ class ServerTab(QWidget):
         version = get_ark_version_from_logs(self.server_folder)
         print("Parsed version from log:", version)  # For debugging
         self.edit_version.setText(version)
+
+    def init_auto_backup_timer(self):
+        """
+        Sets up a QTimer that checks every minute whether it's time for an automatic backup.
+        """
+        self.last_backup_time = QDateTime.currentDateTime()  # Track last backup
+        self.auto_backup_timer = QTimer(self)
+        self.auto_backup_timer.setInterval(60_000)  # 1 minute
+        self.auto_backup_timer.timeout.connect(self.check_auto_backup)
+        self.auto_backup_timer.start()
+    
+    def check_auto_backup(self):
+        """
+        Called once per minute to see if we need to run a backup.
+        """
+        if not self.checkbox_enable_backup.isChecked():
+            return  # Auto backup disabled
+    
+        # Convert selected interval to minutes
+        interval_map = {
+            "30 mins": 30,
+            "1 hr": 60,
+            "3 hrs": 180,
+            "6 hrs": 360,
+            "12 hrs": 720,
+            "24 hrs": 1440
+        }
+        selected_text = self.backup_interval_combo.currentText()
+        interval_minutes = interval_map.get(selected_text, 30)
+    
+        now = QDateTime.currentDateTime()
+        diff = self.last_backup_time.secsTo(now) / 60.0  # difference in minutes
+    
+        if diff >= interval_minutes:
+            # Time to backup
+            self.perform_auto_backup()
+            self.last_backup_time = QDateTime.currentDateTime()
 
     # -------------------------
     # Scheduler Timer
@@ -546,6 +674,38 @@ class ServerTab(QWidget):
             self.server_process = None
             self.label_status.setText("Status: Stopped")
 
+        def save_log_on_stop(self):
+            """
+            Copies the latest ShooterGame log into the user-selected log folder,
+            and names it with the profile name and timestamp.
+            """
+            if not self.server_folder or not self.edit_log_location.text().strip():
+                print("[ERROR] Missing server folder or log destination.")
+                return
+        
+            log_source_folder = os.path.join(self.server_folder, "ShooterGame", "Saved", "Logs")
+            latest_log_path = os.path.join(log_source_folder, "ShooterGame.log")
+        
+            if not os.path.exists(latest_log_path):
+                print(f"[ERROR] ShooterGame.log not found at {latest_log_path}")
+                return
+        
+            profile = self.edit_profile.text().strip().replace(" ", "_")
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_filename = f"{profile}_log_{timestamp}.log"
+        
+            log_dest_folder = os.path.join(self.edit_log_location.text().strip(), f"{profile}_Logs")
+            os.makedirs(log_dest_folder, exist_ok=True)
+        
+            log_dest_path = os.path.join(log_dest_folder, log_filename)
+        
+            try:
+                shutil.copyfile(latest_log_path, log_dest_path)
+                print(f"[LOG SAVED] {log_dest_path}")
+            except Exception as e:
+                print(f"[ERROR] Failed to copy log: {e}")
+
+
     def upgrade_server(self, auto_update=False, on_complete=None):
         """
         Runs SteamCMD to install/update ARK server files while logging updates live.
@@ -574,10 +734,15 @@ class ServerTab(QWidget):
         time.sleep(3)
     
         profile_name = self.edit_profile.text().replace(" ", "_")
-        logs_folder = os.path.join(server_path, f"{profile_name}_Log")
-    
-        if not os.path.exists(logs_folder):
-            os.makedirs(logs_folder)
+        log_base_folder = self.edit_log_dest.text().strip()
+        
+        # Use GUI-specified log folder if provided
+        if not log_base_folder:
+            log_base_folder = server_path  # fallback to server path
+        
+        logs_folder = os.path.join(log_base_folder, f"{profile_name}_Log")
+        os.makedirs(logs_folder, exist_ok=True)
+
     
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file_path = os.path.join(logs_folder, f"update_log_{timestamp}.log")
@@ -626,46 +791,54 @@ class ServerTab(QWidget):
             if not auto_update:
                 QMessageBox.critical(self, "Update Failed", f"Error: {str(e)}")
 
-
-
-
     # -------------------------
     # Backup Saves
     # -------------------------
 
-    def backup_saves(self):
+    def perform_auto_backup(self):
         """
-        Backs up the server's 'ShooterGame/Saved' folder into a ZIP named with a timestamp,
-        stored in a folder named <profile>_Backups
+        Zips the 'ShooterGame/Saved' folder into a timestamped ZIP
+        and places it into a profile-named folder inside the user-chosen backup destination.
         """
         if not self.server_folder:
             QMessageBox.warning(self, "No Server Folder", "Please import a server first.")
             return
-
-        saves_path = os.path.join(self.server_folder, "ShooterGame", "Saved")
-        if not os.path.exists(saves_path):
-            QMessageBox.warning(self, "No Saves Folder", f"Saves folder not found: {saves_path}")
+    
+        # 1) Read the backup destination from GUI
+        backup_dest = self.edit_backup_dest.text().strip()
+        if not backup_dest:
+            QMessageBox.warning(self, "No Backup Destination", "Please select a backup folder.")
             return
-
-        profile_name = self.edit_profile.text()
-        backups_folder = f"{profile_name}_Backups"
-        if not os.path.exists(backups_folder):
-            os.makedirs(backups_folder)
-
+    
+        # 2) The ARK 'Saved' folder
+        saved_folder = os.path.join(self.server_folder, "ShooterGame", "Saved")
+        if not os.path.exists(saved_folder):
+            QMessageBox.warning(self, "Folder Missing", f"Cannot find: {saved_folder}")
+            return
+    
+        # 3) Build profile folder
+        profile_name = self.edit_profile.text().strip().replace(" ", "_")
+        profile_backup_dir = os.path.join(backup_dest, f"{profile_name}_Backups")
+        os.makedirs(profile_backup_dir, exist_ok=True)
+    
+        # 4) Zip the saves with timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         zip_name = f"{profile_name}_backup_{timestamp}.zip"
-        zip_path = os.path.join(backups_folder, zip_name)
-
+        zip_path = os.path.join(profile_backup_dir, zip_name)
+    
         try:
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for root, dirs, files in os.walk(saves_path):
+                for root, dirs, files in os.walk(saved_folder):
                     for file in files:
                         file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, start=saves_path)
+                        arcname = os.path.relpath(file_path, start=saved_folder)
                         zipf.write(file_path, arcname=arcname)
-            QMessageBox.information(self, "Backup Complete", f"Saved backup to {zip_path}")
+    
+            QMessageBox.information(self, "Backup Complete", f"Backup saved to:\n{zip_path}")
+    
         except Exception as e:
-            QMessageBox.critical(self, "Backup Error", str(e))
+            QMessageBox.critical(self, "Backup Failed", str(e))
+
 
     # -------------------------
     # Import / Start
@@ -734,6 +907,13 @@ class ServerTab(QWidget):
         if not self.server_folder:
             return
     
+        copy_server_log_on_stop(
+    self.server_folder,
+    self.edit_profile.text(),
+    self.edit_log_location.text()
+)
+
+
         # Update GUI immediately
         self.label_status.setText("Status: Stopped")
         self.button_start.setText("Start")
@@ -766,8 +946,6 @@ class ServerTab(QWidget):
     
         except Exception as e:
             print(f"[ERROR] Failed to stop server: {e}")
-
-
 
     def browse_steamcmd_location(self):
         """
@@ -819,6 +997,16 @@ class ServerTab(QWidget):
             QMessageBox.critical(self, "Download Failed", str(e))
             self.button_download_steamcmd.setText("Download SteamCMD")
 
+    def browse_log_location(self):
+        """
+        Opens a QFileDialog for the user to choose the log destination folder.
+        Sets the chosen path in the log location QLineEdit.
+        """
+        folder = QFileDialog.getExistingDirectory(self, "Select Log Folder")
+        if folder:
+            self.edit_log_location.setText(folder)
+
+
     # -------------------------
     # For Saving/Loading Config
     # -------------------------
@@ -843,7 +1031,11 @@ class ServerTab(QWidget):
             "shutdown_days": day_bools,
             "shutdown_time": self.shutdown_time_edit.time().toString("HH:mm"),
             "perform_update": self.checkbox_perform_update.isChecked(),
-            "then_restart": self.checkbox_then_restart.isChecked()
+            "then_restart": self.checkbox_then_restart.isChecked(),
+            "auto_backup_enabled": self.checkbox_enable_backup.isChecked(),
+            "auto_backup_interval": self.backup_interval_combo.currentText(),
+            "auto_backup_dest": self.edit_backup_dest.text(),
+            "log_location": self.edit_log_location.text(),
         }
 
     def set_server_info(self, info):
@@ -856,7 +1048,10 @@ class ServerTab(QWidget):
         self.edit_install.setText(info.get("install", ""))
         self.edit_steamcmd.setText(info.get("steamcmd", ""))  # <-- Restore SteamCMD path
         self.edit_launch_args.setText(info.get("launch_args", ""))
-
+        self.checkbox_enable_backup.setChecked(info.get("auto_backup_enabled", False))
+        self.backup_interval_combo.setCurrentText(info.get("auto_backup_interval", "30 mins"))
+        self.edit_backup_dest.setText(info.get("auto_backup_dest", ""))
+        self.edit_log_location.setText(info.get("log_location", ""))
 
         # Scheduler
         day_bools = info.get("shutdown_days", [])
@@ -880,7 +1075,6 @@ class ServerTab(QWidget):
         self.auto_start_time_edit.setTime(QTime(int(h), int(m)))
         
         self.checkbox_auto_start_update.setChecked(info.get("autostart_update", False))
-
 
 # ---------------------------
 # 3) Main Window with Config + "Save All"
