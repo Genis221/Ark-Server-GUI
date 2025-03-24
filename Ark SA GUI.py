@@ -811,7 +811,7 @@ class ServerTab(QWidget):
             return
     
         # 2) The ARK 'Saved' folder
-        saved_folder = os.path.join(self.server_folder, "ShooterGame", "Saved")
+        saved_folder = os.path.join(self.server_folder, "ShooterGame", "Saved", "SavedArks")
         if not os.path.exists(saved_folder):
             QMessageBox.warning(self, "Folder Missing", f"Cannot find: {saved_folder}")
             return
