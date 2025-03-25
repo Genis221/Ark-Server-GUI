@@ -149,7 +149,7 @@ class ServerTab(QWidget):
         main_layout.addLayout(self.header_layout)
     
         #
-        # 1) Put rows 0–4 (everything ABOVE Automatic Shutdown) in self.header_layout
+        # 1) Put rows 0–4 (everything ABOVE the scroll area) in self.header_layout
         #
     
         # Row 0: Profile & buttons
@@ -218,26 +218,55 @@ class ServerTab(QWidget):
         self.header_layout.addWidget(self.button_upgrade,     4, 7)
     
         #
-        # 2) Create the scrollable area for everything BELOW Automatic Shutdown
+        # 2) Create the scrollable area for everything BELOW
         #
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
     
         scroll_content = QWidget()
-
         self.scroll_area.setWidget(scroll_content)
     
-        # You can use a grid or a vertical layout inside the scroll area
+        # Use a QVBoxLayout for the scrollable content
         self.scroll_layout = QVBoxLayout(scroll_content)
     
         # Finally, add the scroll area to the main layout
         main_layout.addWidget(self.scroll_area)
     
         #
-        # 3) Place Automatic Shutdown (row 5) and everything else INSIDE the scroll_layout
+        # 3) Place Automatic Start and Automatic Shutdown inside the scroll_layout
+        #    -- now swapped so that Automatic Start appears before Automatic Shutdown
         #
     
-        # Row 5: Automatic Shutdown
+        # --- Automatic Start ---
+        self.auto_start_group = QGroupBox("Automatic Start")
+        auto_start_layout = QVBoxLayout()
+        self.auto_start_group.setLayout(auto_start_layout)
+    
+        # Days of the week
+        auto_days_layout = QHBoxLayout()
+        self.auto_start_days = []
+        for day in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]:
+            cb = QCheckBox(day)
+            auto_days_layout.addWidget(cb)
+            self.auto_start_days.append(cb)
+        auto_start_layout.addLayout(auto_days_layout)
+    
+        # Start Time and optional update
+        auto_time_layout = QHBoxLayout()
+        auto_time_layout.addWidget(QLabel("Start Server at:"))
+        self.auto_start_time_edit = QTimeEdit()
+        self.auto_start_time_edit.setDisplayFormat("hh:mm AP")
+        self.auto_start_time_edit.setTime(QTime(9, 0))
+        auto_time_layout.addWidget(self.auto_start_time_edit)
+    
+        self.checkbox_auto_start_update = QCheckBox("Perform update")
+        auto_time_layout.addWidget(self.checkbox_auto_start_update)
+        auto_start_layout.addLayout(auto_time_layout)
+    
+        # Add Automatic Start to the scroll layout
+        self.scroll_layout.addWidget(self.auto_start_group)
+    
+        # --- Automatic Shutdown ---
         self.scheduler_group = QGroupBox("Automatic Shutdown")
         scheduler_layout = QVBoxLayout()
         self.scheduler_group.setLayout(scheduler_layout)
@@ -264,36 +293,8 @@ class ServerTab(QWidget):
     
         scheduler_layout.addLayout(time_layout)
     
-        # Now add Automatic Shutdown to the scroll layout (NOT the header_layout)
+        # Now add Automatic Shutdown to the scroll layout
         self.scroll_layout.addWidget(self.scheduler_group)
-    
-        # Row 5A: Automatic Start
-        self.auto_start_group = QGroupBox("Automatic Start")
-        auto_start_layout = QVBoxLayout()
-        self.auto_start_group.setLayout(auto_start_layout)
-    
-        # 5A: Days of the week
-        auto_days_layout = QHBoxLayout()
-        self.auto_start_days = []
-        for day in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]:
-            cb = QCheckBox(day)
-            auto_days_layout.addWidget(cb)
-            self.auto_start_days.append(cb)
-        auto_start_layout.addLayout(auto_days_layout)
-    
-        # 5B: Start Time and optional update
-        auto_time_layout = QHBoxLayout()
-        auto_time_layout.addWidget(QLabel("Start Server at:"))
-        self.auto_start_time_edit = QTimeEdit()
-        self.auto_start_time_edit.setDisplayFormat("hh:mm AP")
-        self.auto_start_time_edit.setTime(QTime(9, 0))
-        auto_time_layout.addWidget(self.auto_start_time_edit)
-    
-        self.checkbox_auto_start_update = QCheckBox("Perform update")
-        auto_time_layout.addWidget(self.checkbox_auto_start_update)
-        auto_start_layout.addLayout(auto_time_layout)
-    
-        self.scroll_layout.addWidget(self.auto_start_group)
     
         # Row 6: Server Configuration Collapsible Section
         self.config_group = QGroupBox("Server Configuration")
@@ -375,7 +376,7 @@ class ServerTab(QWidget):
         self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
         self.button_download_steamcmd.clicked.connect(self.download_steamcmd)
         # etc...
-    
+
         
     def edit_config_file(self, filename):
         """
