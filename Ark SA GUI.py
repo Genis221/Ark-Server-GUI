@@ -16,7 +16,7 @@ import re
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QGridLayout,
     QHBoxLayout, QLabel, QPushButton, QLineEdit, QFileDialog, QMessageBox, QAction,
-    QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout, QComboBox
+    QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout, QComboBox, QScrollArea, QFrame
 )
 from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime
 
@@ -137,18 +137,20 @@ class ServerTab(QWidget):
             self.edit_backup_dest.setText(folder)
 
     def init_ui(self):
-        # Outer vertical layout (aligned top)
-        outerLayout = QVBoxLayout(self)
-        outerLayout.setContentsMargins(10, 10, 10, 10)
-        outerLayout.setSpacing(5)
-        outerLayout.setAlignment(Qt.AlignTop)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(5)
+        
+        # ---------------------
+        # Fixed Header Layout
+        # ---------------------
+        self.header_layout = QGridLayout()
+        self.header_layout.setSpacing(5)
+        main_layout.addLayout(self.header_layout)
     
-        # Inner grid for rows 1 and 2
-        self.grid = QGridLayout()
-        self.grid.setSpacing(5)
-    
-        # Add the grid to the outer layout
-        outerLayout.addLayout(self.grid)
+        #
+        # 1) Put rows 0–4 (everything ABOVE Automatic Shutdown) in self.header_layout
+        #
     
         # Row 0: Profile & buttons
         row0Layout = QHBoxLayout()
@@ -166,7 +168,8 @@ class ServerTab(QWidget):
         row0Layout.addWidget(self.button_rcon)
     
         self.button_start.setStyleSheet("background-color: green; color: white;")
-        self.grid.addLayout(row0Layout, 0, 0, 1, -1, alignment=Qt.AlignLeft)
+    
+        self.header_layout.addLayout(row0Layout, 0, 0, 1, 8, alignment=Qt.AlignLeft)
     
         # Row 1: Installed Version & Installation Location
         label_version = QLabel("Installed Version:")
@@ -178,11 +181,11 @@ class ServerTab(QWidget):
         self.edit_install.setReadOnly(True)
         self.button_set_loc = QPushButton("Set Location")
     
-        self.grid.addWidget(label_version, 1, 0)
-        self.grid.addWidget(self.edit_version, 1, 1, 1, 2)
-        self.grid.addWidget(label_install, 1, 3)
-        self.grid.addWidget(self.edit_install, 1, 4, 1, 3)
-        self.grid.addWidget(self.button_set_loc, 1, 7)
+        self.header_layout.addWidget(label_version, 1, 0)
+        self.header_layout.addWidget(self.edit_version, 1, 1, 1, 2)
+        self.header_layout.addWidget(label_install, 1, 3)
+        self.header_layout.addWidget(self.edit_install, 1, 4, 1, 3)
+        self.header_layout.addWidget(self.button_set_loc, 1, 7)
     
         # Row 2: SteamCMD Location + Browse + Download
         label_steamcmd = QLabel("SteamCMD Location:")
@@ -192,16 +195,16 @@ class ServerTab(QWidget):
         self.button_download_steamcmd.clicked.connect(self.download_steamcmd)
         self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
     
-        self.grid.addWidget(label_steamcmd, 2, 0)
-        self.grid.addWidget(self.edit_steamcmd, 2, 1, 1, 3)
-        self.grid.addWidget(self.button_browse_steamcmd, 2, 4)
-        self.grid.addWidget(self.button_download_steamcmd, 2, 5)
+        self.header_layout.addWidget(label_steamcmd, 2, 0)
+        self.header_layout.addWidget(self.edit_steamcmd, 2, 1, 1, 3)
+        self.header_layout.addWidget(self.button_browse_steamcmd, 2, 4)
+        self.header_layout.addWidget(self.button_download_steamcmd, 2, 5)
     
-        # ✅ Row 3: Command Line Launch Arguments
+        # Row 3: Command Line Launch Arguments
         label_launch_args = QLabel("Launch Arguments:")
         self.edit_launch_args = QLineEdit()
-        self.grid.addWidget(label_launch_args, 3, 0)
-        self.grid.addWidget(self.edit_launch_args, 3, 1, 1, 6)
+        self.header_layout.addWidget(label_launch_args, 3, 0)
+        self.header_layout.addWidget(self.edit_launch_args, 3, 1, 1, 6)
     
         # Row 4: Status, Availability, Players, Upgrade/Verify
         self.label_status = QLabel("Status: Stopped")
@@ -209,12 +212,32 @@ class ServerTab(QWidget):
         self.label_players = QLabel("Players: 0 / 25")
         self.button_upgrade = QPushButton("Update / Verify")
     
-        self.grid.addWidget(self.label_status,       4, 0, 1, 2)
-        self.grid.addWidget(self.label_availability, 4, 2, 1, 3)
-        self.grid.addWidget(self.label_players,      4, 5, 1, 2)
-        self.grid.addWidget(self.button_upgrade,     4, 7)
+        self.header_layout.addWidget(self.label_status,       4, 0, 1, 2)
+        self.header_layout.addWidget(self.label_availability, 4, 2, 1, 3)
+        self.header_layout.addWidget(self.label_players,      4, 5, 1, 2)
+        self.header_layout.addWidget(self.button_upgrade,     4, 7)
     
-        # Row 5: Automatic Management
+        #
+        # 2) Create the scrollable area for everything BELOW Automatic Shutdown
+        #
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+    
+        scroll_content = QWidget()
+
+        self.scroll_area.setWidget(scroll_content)
+    
+        # You can use a grid or a vertical layout inside the scroll area
+        self.scroll_layout = QVBoxLayout(scroll_content)
+    
+        # Finally, add the scroll area to the main layout
+        main_layout.addWidget(self.scroll_area)
+    
+        #
+        # 3) Place Automatic Shutdown (row 5) and everything else INSIDE the scroll_layout
+        #
+    
+        # Row 5: Automatic Shutdown
         self.scheduler_group = QGroupBox("Automatic Shutdown")
         scheduler_layout = QVBoxLayout()
         self.scheduler_group.setLayout(scheduler_layout)
@@ -240,13 +263,15 @@ class ServerTab(QWidget):
         time_layout.addWidget(self.checkbox_then_restart)
     
         scheduler_layout.addLayout(time_layout)
-        self.grid.addWidget(self.scheduler_group, 6, 0, 1, -1)
     
-        # Row 5A: Auto Start Management
+        # Now add Automatic Shutdown to the scroll layout (NOT the header_layout)
+        self.scroll_layout.addWidget(self.scheduler_group)
+    
+        # Row 5A: Automatic Start
         self.auto_start_group = QGroupBox("Automatic Start")
         auto_start_layout = QVBoxLayout()
         self.auto_start_group.setLayout(auto_start_layout)
-
+    
         # 5A: Days of the week
         auto_days_layout = QHBoxLayout()
         self.auto_start_days = []
@@ -255,21 +280,21 @@ class ServerTab(QWidget):
             auto_days_layout.addWidget(cb)
             self.auto_start_days.append(cb)
         auto_start_layout.addLayout(auto_days_layout)
-
+    
         # 5B: Start Time and optional update
         auto_time_layout = QHBoxLayout()
         auto_time_layout.addWidget(QLabel("Start Server at:"))
         self.auto_start_time_edit = QTimeEdit()
         self.auto_start_time_edit.setDisplayFormat("hh:mm AP")
-        self.auto_start_time_edit.setTime(QTime(9, 0))  # default 9:00 AM
+        self.auto_start_time_edit.setTime(QTime(9, 0))
         auto_time_layout.addWidget(self.auto_start_time_edit)
-
+    
         self.checkbox_auto_start_update = QCheckBox("Perform update")
         auto_time_layout.addWidget(self.checkbox_auto_start_update)
         auto_start_layout.addLayout(auto_time_layout)
-
-        self.grid.addWidget(self.auto_start_group, 5, 0, 1, -1)
-
+    
+        self.scroll_layout.addWidget(self.auto_start_group)
+    
         # Row 6: Server Configuration Collapsible Section
         self.config_group = QGroupBox("Server Configuration")
         self.config_group.setCheckable(True)
@@ -281,24 +306,15 @@ class ServerTab(QWidget):
     
         config_layout.addWidget(self.button_edit_game_ini)
         config_layout.addWidget(self.button_edit_gameusersettings_ini)
-    
         self.config_group.setLayout(config_layout)
-        self.grid.addWidget(self.config_group, 8, 0, 1, -1)
     
-        # Connect config buttons
-        self.button_edit_game_ini.clicked.connect(lambda: self.edit_config_file("Game.ini"))
-        self.button_edit_gameusersettings_ini.clicked.connect(lambda: self.edit_config_file("GameUserSettings.ini"))
+        self.scroll_layout.addWidget(self.config_group)
     
-        # Connect main buttons
-        self.button_start.clicked.connect(self.start_server)
-        self.button_upgrade.clicked.connect(self.upgrade_server)
-        self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
-
         # Row 7: Automatic Backup
         self.auto_backup_group = QGroupBox("Automatic World Save Backup")
         auto_backup_layout = QVBoxLayout()
         self.auto_backup_group.setLayout(auto_backup_layout)
-        
+    
         # Backup Interval
         interval_layout = QHBoxLayout()
         interval_layout.addWidget(QLabel("Backup Interval:"))
@@ -308,7 +324,7 @@ class ServerTab(QWidget):
         ])
         interval_layout.addWidget(self.backup_interval_combo)
         auto_backup_layout.addLayout(interval_layout)
-        
+    
         # Backup Destination
         dest_layout = QHBoxLayout()
         dest_layout.addWidget(QLabel("Backup Folder:"))
@@ -318,46 +334,48 @@ class ServerTab(QWidget):
         dest_layout.addWidget(self.button_browse_backup_dest)
         auto_backup_layout.addLayout(dest_layout)
         self.button_browse_backup_dest.clicked.connect(self.browse_backup_destination)
-        
+    
         # Manual Backup Button
         self.button_manual_backup = QPushButton("Backup Now")
         auto_backup_layout.addWidget(self.button_manual_backup)
         self.button_manual_backup.clicked.connect(self.perform_auto_backup)
-        
-        # Add the Auto Backup group to the grid
-        self.grid.addWidget(self.auto_backup_group, 7, 0, 1, -1)
-       
+    
         # Enable / Disable Auto Backup
         self.checkbox_enable_backup = QCheckBox("Enable Auto Backup")
         auto_backup_layout.addWidget(self.checkbox_enable_backup)
-        
-        # Place group box in grid
-        self.grid.addWidget(self.auto_backup_group, 7, 0, 1, -1)
-        
-        # Connect the Browse button
-        self.button_browse_backup_dest.clicked.connect(self.browse_backup_destination)
-
-        self.init_auto_backup_timer()
-
+    
+        # Add the Auto Backup group to the scroll layout
+        self.scroll_layout.addWidget(self.auto_backup_group)
+    
         # Row: Log Location
         label_log = QLabel("Game Log Location:")
         self.edit_log_location = QLineEdit("")
         self.button_browse_log = QPushButton("Browse")
         self.button_browse_log.clicked.connect(self.browse_log_location)
-        
-        self.grid.addWidget(label_log, 9, 0)
-        self.grid.addWidget(self.edit_log_location, 9, 1, 1, 4)
-        self.grid.addWidget(self.button_browse_log, 9, 5)
-
+    
+        self.scroll_layout.addWidget(label_log)
+        self.scroll_layout.addWidget(self.edit_log_location)
+        self.scroll_layout.addWidget(self.button_browse_log)
+    
         # Row: Update Log Location
         label_update_log = QLabel("Update Log Location:")
         self.edit_update_log_location = QLineEdit("")
         self.button_browse_update_log = QPushButton("Browse")
         self.button_browse_update_log.clicked.connect(self.browse_update_log_location)
-        
-        self.grid.addWidget(label_update_log, 10, 0)
-        self.grid.addWidget(self.edit_update_log_location, 10, 1, 1, 4)
-        self.grid.addWidget(self.button_browse_update_log, 10, 5)
+    
+        self.scroll_layout.addWidget(label_update_log)
+        self.scroll_layout.addWidget(self.edit_update_log_location)
+        self.scroll_layout.addWidget(self.button_browse_update_log)
+    
+        #
+        # Connect your signals/slots (start_server, upgrade_server, etc.)
+        #
+        self.button_start.clicked.connect(self.start_server)
+        self.button_upgrade.clicked.connect(self.upgrade_server)
+        self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
+        self.button_download_steamcmd.clicked.connect(self.download_steamcmd)
+        # etc...
+    
         
     def edit_config_file(self, filename):
         """
