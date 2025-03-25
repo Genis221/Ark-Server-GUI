@@ -136,7 +136,6 @@ class ServerTab(QWidget):
         if folder:
             self.edit_backup_dest.setText(folder)
 
-
     def init_ui(self):
         # Outer vertical layout (aligned top)
         outerLayout = QVBoxLayout(self)
@@ -296,7 +295,7 @@ class ServerTab(QWidget):
         self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
 
         # Row 7: Automatic Backup
-        self.auto_backup_group = QGroupBox("Automatic Backup")
+        self.auto_backup_group = QGroupBox("Automatic World Save Backup")
         auto_backup_layout = QVBoxLayout()
         self.auto_backup_group.setLayout(auto_backup_layout)
         
@@ -341,7 +340,7 @@ class ServerTab(QWidget):
         self.init_auto_backup_timer()
 
         # Row: Log Location
-        label_log = QLabel("Log Location:")
+        label_log = QLabel("Game Log Location:")
         self.edit_log_location = QLineEdit("")
         self.button_browse_log = QPushButton("Browse")
         self.button_browse_log.clicked.connect(self.browse_log_location)
@@ -350,8 +349,16 @@ class ServerTab(QWidget):
         self.grid.addWidget(self.edit_log_location, 9, 1, 1, 4)
         self.grid.addWidget(self.button_browse_log, 9, 5)
 
-
-
+        # Row: Update Log Location
+        label_update_log = QLabel("Update Log Location:")
+        self.edit_update_log_location = QLineEdit("")
+        self.button_browse_update_log = QPushButton("Browse")
+        self.button_browse_update_log.clicked.connect(self.browse_update_log_location)
+        
+        self.grid.addWidget(label_update_log, 10, 0)
+        self.grid.addWidget(self.edit_update_log_location, 10, 1, 1, 4)
+        self.grid.addWidget(self.button_browse_update_log, 10, 5)
+        
     def edit_config_file(self, filename):
         """
         Opens the selected server configuration file in Notepad++.
@@ -488,12 +495,9 @@ class ServerTab(QWidget):
         interval_minutes = interval_map.get(selected_text, 30)
     
         now = QDateTime.currentDateTime()
-        diff = self.last_backup_time.secsTo(now) / 60.0  # difference in minutes
-    
-        if diff >= interval_minutes:
-            # Time to backup
+        while self.last_backup_time.secsTo(now) >= interval_minutes * 60:
             self.perform_auto_backup()
-            self.last_backup_time = QDateTime.currentDateTime()
+            self.last_backup_time = self.last_backup_time.addSecs(interval_minutes * 60)
 
     # -------------------------
     # Scheduler Timer
@@ -531,12 +535,11 @@ class ServerTab(QWidget):
                 self.auto_start_triggered_today = True
     
                 if self.checkbox_auto_start_update.isChecked():
-                    self.upgrade_server(auto_update=True, on_complete=self.start_server)
+                    self.upgrade_server(auto_update=True, on_complete=lambda: QTimer.singleShot(5000, self.start_server))
                 else:
                     self.start_server()
         else:
             self.auto_start_triggered_today = False
-
 
     def check_scheduled_shutdown(self):
         """
@@ -568,7 +571,6 @@ class ServerTab(QWidget):
             # Reset trigger if time window has passed
             if now > scheduled.addSecs(120):
                 self.shutdown_triggered_today = False
-
 
     def perform_scheduled_actions(self):
         """
@@ -705,7 +707,6 @@ class ServerTab(QWidget):
             except Exception as e:
                 print(f"[ERROR] Failed to copy log: {e}")
 
-
     def upgrade_server(self, auto_update=False, on_complete=None):
         """
         Runs SteamCMD to install/update ARK server files while logging updates live.
@@ -733,20 +734,22 @@ class ServerTab(QWidget):
         # Delay to allow any prior dialogs to finish and give buffer time
         time.sleep(3)
     
-        profile_name = self.edit_profile.text().replace(" ", "_")
-        log_base_folder = self.edit_log_dest.text().strip()
-        
-        # Use GUI-specified log folder if provided
-        if not log_base_folder:
-            log_base_folder = server_path  # fallback to server path
-        
-        logs_folder = os.path.join(log_base_folder, f"{profile_name}_Log")
-        os.makedirs(logs_folder, exist_ok=True)
-
-    
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file_path = os.path.join(logs_folder, f"update_log_{timestamp}.log")
-    
+        profile_name = self.edit_profile.text().strip().replace(" ", "_")
+        
+        # Use the user-defined Update Log Location from the GUI
+        log_base_folder = self.edit_update_log_location.text().strip()
+        
+        # Build: <YourLogLocation>/<ProfileName>_Update_Logs/
+        if not log_base_folder:
+            log_base_folder = server_path  # fallback
+        
+        update_log_folder = os.path.join(log_base_folder, f"{profile_name}_Update_Logs")
+        os.makedirs(update_log_folder, exist_ok=True)
+        
+        # Final log path
+        log_file_path = os.path.join(update_log_folder, f"update_log_{timestamp}.log")
+
         steamcmd_command = [
             steamcmd_exe, "+login", "anonymous",
             "+force_install_dir", server_path,
@@ -834,11 +837,30 @@ class ServerTab(QWidget):
                         arcname = os.path.relpath(file_path, start=saved_folder)
                         zipf.write(file_path, arcname=arcname)
     
-            QMessageBox.information(self, "Backup Complete", f"Backup saved to:\n{zip_path}")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Backup Complete")
+            msg.setText(f"Backup saved to:\n{zip_path}\n\nThis will close in 10 seconds...")
+            msg.setIcon(QMessageBox.Information)
+            msg.setStandardButtons(QMessageBox.Ok)
+            msg.show()
+            
+            # Countdown and auto-close
+            self.backup_countdown = 10
+            def update_msg():
+                self.backup_countdown -= 1
+                if self.backup_countdown <= 0:
+                    msg.done(0)
+                    timer.stop()
+                else:
+                    msg.setText(f"Backup saved to:\n{zip_path}\n\nThis will close in {self.backup_countdown} seconds...")
+            
+            timer = QTimer(self)
+            timer.timeout.connect(update_msg)
+            timer.start(1000)
+
     
         except Exception as e:
             QMessageBox.critical(self, "Backup Failed", str(e))
-
 
     # -------------------------
     # Import / Start
@@ -854,7 +876,6 @@ class ServerTab(QWidget):
             # Dynamically parse logs for Ark version
             version = get_ark_version_from_logs(folder)
             self.edit_version.setText(version)
-
 
     def start_server(self):
         """
@@ -898,7 +919,6 @@ class ServerTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to start the server: {str(e)}")
 
-
     def stop_server(self):
         """
         Stops the ARK server process and immediately updates the UI status/button.
@@ -908,12 +928,11 @@ class ServerTab(QWidget):
             return
     
         copy_server_log_on_stop(
-    self.server_folder,
-    self.edit_profile.text(),
-    self.edit_log_location.text()
-)
-
-
+            self.server_folder,
+            self.edit_profile.text(),
+            self.edit_log_location.text()
+        )
+        
         # Update GUI immediately
         self.label_status.setText("Status: Stopped")
         self.button_start.setText("Start")
@@ -1006,7 +1025,11 @@ class ServerTab(QWidget):
         if folder:
             self.edit_log_location.setText(folder)
 
-
+    def browse_update_log_location(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Update Log Folder")
+        if folder:
+            self.edit_update_log_location.setText(folder)
+    
     # -------------------------
     # For Saving/Loading Config
     # -------------------------
@@ -1036,6 +1059,7 @@ class ServerTab(QWidget):
             "auto_backup_interval": self.backup_interval_combo.currentText(),
             "auto_backup_dest": self.edit_backup_dest.text(),
             "log_location": self.edit_log_location.text(),
+            "update_log_location": self.edit_update_log_location.text(),
         }
 
     def set_server_info(self, info):
@@ -1052,6 +1076,7 @@ class ServerTab(QWidget):
         self.backup_interval_combo.setCurrentText(info.get("auto_backup_interval", "30 mins"))
         self.edit_backup_dest.setText(info.get("auto_backup_dest", ""))
         self.edit_log_location.setText(info.get("log_location", ""))
+        self.edit_update_log_location.setText(info.get("update_log_location", ""))
 
         # Scheduler
         day_bools = info.get("shutdown_days", [])
@@ -1160,9 +1185,14 @@ class ArkServerManager(QMainWindow):
 
         # Toolbar: "Save All"
         self.toolbar = self.addToolBar("Main Toolbar")
-        save_action = QAction("Save All", self)
+        save_action = QAction("Save Config", self)
         save_action.triggered.connect(self.save_all_tabs)
         self.toolbar.addAction(save_action)
+
+        # ✅ NEW: Info Action
+        info_action = QAction("Ark Server Manager Info", self)
+        info_action.triggered.connect(self.show_info_dialog)
+        self.toolbar.addAction(info_action)
 
         # Load tabs from config or create one tab if empty
         self.load_tabs_from_config()
@@ -1215,6 +1245,13 @@ class ArkServerManager(QMainWindow):
         self.config_manager.data["servers"] = servers
         self.config_manager.save_config()
         QMessageBox.information(self, "Saved", "All server information saved to config.")
+
+    def show_info_dialog(self):
+        QMessageBox.information(
+            self,
+            "Ark Server Manager Information",
+            "ARK Server Manager GUI\nVersion 1.0\n\nManage, start, stop, backup, and update your ARK servers with ease.\n\nDeveloped by Dustin Romero"
+        )
 
 # ---------------------------
 # Main
