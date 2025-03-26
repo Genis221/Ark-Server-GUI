@@ -208,7 +208,7 @@ class ServerTab(QWidget):
     
         # Row 4: Status, Availability, Players, Upgrade/Verify
         self.label_status = QLabel("Status: Stopped")
-        self.label_availability = QLabel("Availability: Unavailable")
+        self.label_availability = QLabel("Availability: Offline")
         self.label_players = QLabel("Players: 0 / 25")
         self.button_upgrade = QPushButton("Update / Verify")
     
@@ -234,7 +234,6 @@ class ServerTab(QWidget):
     
         #
         # 3) Place Automatic Start and Automatic Shutdown inside the scroll_layout
-        #    -- now swapped so that Automatic Start appears before Automatic Shutdown
         #
     
         # --- Automatic Start ---
@@ -253,17 +252,19 @@ class ServerTab(QWidget):
     
         # Start Time and optional update
         auto_time_layout = QHBoxLayout()
+        auto_time_layout.setAlignment(Qt.AlignLeft)  # shift everything left
         auto_time_layout.addWidget(QLabel("Start Server at:"))
+    
         self.auto_start_time_edit = QTimeEdit()
         self.auto_start_time_edit.setDisplayFormat("hh:mm AP")
         self.auto_start_time_edit.setTime(QTime(9, 0))
+        self.auto_start_time_edit.setFixedWidth(180)  # <-- MAKE WIDER
         auto_time_layout.addWidget(self.auto_start_time_edit)
     
-        self.checkbox_auto_start_update = QCheckBox("Perform update")
+        self.checkbox_auto_start_update = QCheckBox("Perform update (Prior to Server Starting)")
         auto_time_layout.addWidget(self.checkbox_auto_start_update)
         auto_start_layout.addLayout(auto_time_layout)
     
-        # Add Automatic Start to the scroll layout
         self.scroll_layout.addWidget(self.auto_start_group)
     
         # --- Automatic Shutdown ---
@@ -280,10 +281,13 @@ class ServerTab(QWidget):
         scheduler_layout.addLayout(days_layout)
     
         time_layout = QHBoxLayout()
+        time_layout.setAlignment(Qt.AlignLeft)  # shift everything left
         time_layout.addWidget(QLabel("Shutdown at:"))
+    
         self.shutdown_time_edit = QTimeEdit()
         self.shutdown_time_edit.setDisplayFormat("hh:mm AP")
         self.shutdown_time_edit.setTime(QTime(8, 0))
+        self.shutdown_time_edit.setFixedWidth(180)  # <-- MAKE WIDER
         time_layout.addWidget(self.shutdown_time_edit)
     
         self.checkbox_perform_update = QCheckBox("Perform update")
@@ -293,7 +297,6 @@ class ServerTab(QWidget):
     
         scheduler_layout.addLayout(time_layout)
     
-        # Now add Automatic Shutdown to the scroll layout
         self.scroll_layout.addWidget(self.scheduler_group)
     
         # Row 6: Server Configuration Collapsible Section
@@ -311,6 +314,13 @@ class ServerTab(QWidget):
     
         self.scroll_layout.addWidget(self.config_group)
     
+        self.button_edit_game_ini.clicked.connect(
+            lambda: self.edit_config_file("Game.ini")
+        )
+        self.button_edit_gameusersettings_ini.clicked.connect(
+            lambda: self.edit_config_file("GameUserSettings.ini")
+        )
+        
         # Row 7: Automatic Backup
         self.auto_backup_group = QGroupBox("Automatic World Save Backup")
         auto_backup_layout = QVBoxLayout()
@@ -318,11 +328,14 @@ class ServerTab(QWidget):
     
         # Backup Interval
         interval_layout = QHBoxLayout()
+        interval_layout.setAlignment(Qt.AlignLeft)  # shift everything left
         interval_layout.addWidget(QLabel("Backup Interval:"))
+    
         self.backup_interval_combo = QComboBox()
         self.backup_interval_combo.addItems([
             "30 mins", "1 hr", "3 hrs", "6 hrs", "12 hrs", "24 hrs"
         ])
+        self.backup_interval_combo.setFixedWidth(180)  # <-- MAKE WIDER
         interval_layout.addWidget(self.backup_interval_combo)
         auto_backup_layout.addLayout(interval_layout)
     
@@ -345,7 +358,6 @@ class ServerTab(QWidget):
         self.checkbox_enable_backup = QCheckBox("Enable Auto Backup")
         auto_backup_layout.addWidget(self.checkbox_enable_backup)
     
-        # Add the Auto Backup group to the scroll layout
         self.scroll_layout.addWidget(self.auto_backup_group)
     
         # Row: Log Location
@@ -376,26 +388,20 @@ class ServerTab(QWidget):
         self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
         self.button_download_steamcmd.clicked.connect(self.download_steamcmd)
         # etc...
-
-        
+    
     def edit_config_file(self, filename):
         """
         Opens the selected server configuration file in Notepad++.
         If Notepad++ is not found, it defaults to regular Notepad.
         If the file does not exist, it prompts the user to create it.
         """
-        if not self.server_folder:
-            QMessageBox.warning(self, "No Server Folder", "Please import a server first.")
-            return
 
-        # Locate 'steamapps' in the path and extract everything from there onward
-        steamapps_index = self.server_folder.lower().find("steamapps")
-        if steamapps_index == -1:
-            QMessageBox.critical(self, "Error", "Could not find 'steamapps' in the server folder path.")
+        server_path = self.edit_install.text().strip()
+        if not server_path:
+            QMessageBox.warning(self, "No Server Folder", "Please set or import a server first.")
             return
-
-        # Build the correct path for the config files
-        config_path = os.path.join(self.server_folder, "ShooterGame", "Saved", "Config", "WindowsServer", filename)
+        
+        config_path = os.path.join(server_path, "ShooterGame", "Saved", "Config", "WindowsServer", filename)
 
         # Ensure directories exist
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
