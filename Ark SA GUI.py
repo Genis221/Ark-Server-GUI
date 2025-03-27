@@ -16,7 +16,7 @@ import re
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QGridLayout,
     QHBoxLayout, QLabel, QPushButton, QLineEdit, QFileDialog, QMessageBox, QAction,
-    QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout, QComboBox, QScrollArea, QFrame
+    QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout, QComboBox, QScrollArea, QFrame, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime
 
@@ -160,15 +160,21 @@ class ServerTab(QWidget):
         self.edit_profile = QLineEdit("New Server")
     
         self.button_start = QPushButton("Start")
-        self.button_rcon = QPushButton("RCON")
+
+    
+        # 1) Let the Start button expand if there's space...
+        self.button_start.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # 2) ...but cap its width so it doesn't go "past the red line."
+        self.button_start.setMaximumWidth(143)
     
         row0Layout.addWidget(label_profile)
         row0Layout.addWidget(self.edit_profile)
         row0Layout.addWidget(self.button_start)
-        row0Layout.addWidget(self.button_rcon)
+
     
         self.button_start.setStyleSheet("background-color: green; color: white;")
     
+        # Keep the row left-aligned; the maxWidth ensures Start doesn't overshoot
         self.header_layout.addLayout(row0Layout, 0, 0, 1, 8, alignment=Qt.AlignLeft)
     
         # Row 1: Installed Version & Installation Location
@@ -216,7 +222,14 @@ class ServerTab(QWidget):
         self.header_layout.addWidget(self.label_availability, 4, 2, 1, 3)
         self.header_layout.addWidget(self.label_players,      4, 5, 1, 2)
         self.header_layout.addWidget(self.button_upgrade,     4, 7)
-    
+
+        # Create the RCON button here so we can add it to row 4
+        self.button_rcon = QPushButton("RCON")
+
+            # Put RCON at column 6, so it's just left of "Update / Verify" (column 7)
+        self.header_layout.addWidget(self.button_rcon,        3, 7)
+        self.header_layout.addWidget(self.button_upgrade,     4, 7)
+        
         #
         # 2) Create the scrollable area for everything BELOW
         #
@@ -258,7 +271,7 @@ class ServerTab(QWidget):
         self.auto_start_time_edit = QTimeEdit()
         self.auto_start_time_edit.setDisplayFormat("hh:mm AP")
         self.auto_start_time_edit.setTime(QTime(9, 0))
-        self.auto_start_time_edit.setFixedWidth(180)  # <-- MAKE WIDER
+        self.auto_start_time_edit.setFixedWidth(180)
         auto_time_layout.addWidget(self.auto_start_time_edit)
     
         self.checkbox_auto_start_update = QCheckBox("Perform update (Prior to Server Starting)")
@@ -287,7 +300,7 @@ class ServerTab(QWidget):
         self.shutdown_time_edit = QTimeEdit()
         self.shutdown_time_edit.setDisplayFormat("hh:mm AP")
         self.shutdown_time_edit.setTime(QTime(8, 0))
-        self.shutdown_time_edit.setFixedWidth(180)  # <-- MAKE WIDER
+        self.shutdown_time_edit.setFixedWidth(180)
         time_layout.addWidget(self.shutdown_time_edit)
     
         self.checkbox_perform_update = QCheckBox("Perform update")
@@ -335,7 +348,7 @@ class ServerTab(QWidget):
         self.backup_interval_combo.addItems([
             "30 mins", "1 hr", "3 hrs", "6 hrs", "12 hrs", "24 hrs"
         ])
-        self.backup_interval_combo.setFixedWidth(180)  # <-- MAKE WIDER
+        self.backup_interval_combo.setFixedWidth(180)
         interval_layout.addWidget(self.backup_interval_combo)
         auto_backup_layout.addLayout(interval_layout)
     
@@ -389,6 +402,12 @@ class ServerTab(QWidget):
         self.button_download_steamcmd.clicked.connect(self.download_steamcmd)
         # etc...
     
+        self.last_backup_time = None  # Initialize the timer variable
+        self.backup_timer = QTimer(self)
+        self.backup_timer.timeout.connect(self.check_auto_backup)
+        self.backup_timer.start(60 * 1000)  # every 60 seconds
+        
+        
     def edit_config_file(self, filename):
         """
         Opens the selected server configuration file in Notepad++.
@@ -501,28 +520,44 @@ class ServerTab(QWidget):
         self.auto_backup_timer.start()
     
     def check_auto_backup(self):
-        """
-        Called once per minute to see if we need to run a backup.
-        """
+        # 1. Check if auto-backup is enabled
         if not self.checkbox_enable_backup.isChecked():
-            return  # Auto backup disabled
+            return
     
-        # Convert selected interval to minutes
-        interval_map = {
+        # 2. Ensure we have a backup interval
+        selected = self.backup_interval_combo.currentText().strip()
+        interval_minutes = {
             "30 mins": 30,
             "1 hr": 60,
             "3 hrs": 180,
             "6 hrs": 360,
             "12 hrs": 720,
             "24 hrs": 1440
-        }
-        selected_text = self.backup_interval_combo.currentText()
-        interval_minutes = interval_map.get(selected_text, 30)
+        }.get(selected, None)
     
+        if interval_minutes is None:
+            print("[AutoBackup] Invalid interval selected.")
+            return
+    
+        # 3. Check if we have a last backup time stored
         now = QDateTime.currentDateTime()
-        while self.last_backup_time.secsTo(now) >= interval_minutes * 60:
+    
+        if not hasattr(self, 'last_backup_time') or self.last_backup_time is None:
+            # First-time run — don’t trigger backup immediately
+            self.last_backup_time = now
+            print("[AutoBackup] Initialized backup timer.")
+            return
+    
+        # 4. Compare elapsed time
+        elapsed_secs = self.last_backup_time.secsTo(now)
+        if elapsed_secs >= interval_minutes * 60:
+            print(f"[AutoBackup] Performing backup. Elapsed: {elapsed_secs}s")
             self.perform_auto_backup()
-            self.last_backup_time = self.last_backup_time.addSecs(interval_minutes * 60)
+            self.last_backup_time = now
+        else:
+            print(f"[AutoBackup] Not time yet. Elapsed: {elapsed_secs}s")
+
+
 
     # -------------------------
     # Scheduler Timer
@@ -590,7 +625,7 @@ class ServerTab(QWidget):
         # Allow a 2-minute grace window (e.g., trigger if now is within [scheduled, scheduled+2min])
         if scheduled <= now <= scheduled.addSecs(120):
             if not self.shutdown_triggered_today:
-                self.shutdown_triggered_today = True
+                self.shutdown_triggered_today = False
                 self.perform_scheduled_actions()
         else:
             # Reset trigger if time window has passed
@@ -818,6 +853,25 @@ class ServerTab(QWidget):
             self.label_status.setText("Status: Stopped")  # Reset UI even on error
             if not auto_update:
                 QMessageBox.critical(self, "Update Failed", f"Error: {str(e)}")
+    def find_real_ark_pid(self):
+        """
+        Looks at the process we launched. If it spawned children,
+        and one is 'ArkAscendedServer.exe', store that child's PID.
+        """
+        if not self.server_process:
+            return  # No process to inspect
+    
+        try:
+            parent = psutil.Process(self.server_process.pid)
+            children = parent.children(recursive=True)
+            for c in children:
+                if 'ArkAscendedServer.exe' in c.name():
+                    self.server_pid = c.pid
+                    print(f"[DEBUG] Found real ARK server child PID: {self.server_pid}")
+                    return
+            # If no child found, keep self.server_pid as the parent’s PID
+        except Exception as e:
+            print(f"[ERROR] Could not find child ARK PID: {e}")
 
     # -------------------------
     # Backup Saves
