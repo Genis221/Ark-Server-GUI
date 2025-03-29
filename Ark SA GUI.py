@@ -520,7 +520,10 @@ class ServerTab(QWidget):
         self.auto_backup_timer.start()
     
     def check_auto_backup(self):
-        # 1. Check if auto-backup is enabled
+        if self.label_status.text() != "Status: Running":
+            print("[AutoBackup] Skipping backup – server is not running.")
+            return
+    
         if not self.checkbox_enable_backup.isChecked():
             return
     
@@ -557,7 +560,7 @@ class ServerTab(QWidget):
         else:
             print(f"[AutoBackup] Not time yet. Elapsed: {elapsed_secs}s")
 
-
+    
 
     # -------------------------
     # Scheduler Timer
