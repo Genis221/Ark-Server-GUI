@@ -21,6 +21,26 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime
 
+# ---------------------------
+# 1) Extra Important Rules
+# ---------------------------
+
+def update_session_name(ini_path, new_session_name):
+    """
+    Updates the 'SessionName=' line in GameUserSettings.ini with the provided new_session_name.
+    """
+    if not os.path.exists(ini_path):
+        print(f"GameUserSettings.ini not found at: {ini_path}")
+        return
+    with open(ini_path, 'r') as f:
+        lines = f.readlines()
+    with open(ini_path, 'w') as f:
+        for line in lines:
+            if line.strip().startswith("SessionName="):
+                f.write(f"SessionName={new_session_name}\n")
+            else:
+                f.write(line)
+
 def get_ark_version_from_logs(server_folder):
     """
     Searches the newest log file in:
@@ -151,6 +171,7 @@ def copy_server_log_on_stop(server_folder, profile_name, log_dest_folder):
 # ---------------------------
 # 1) ConfigManager
 # ---------------------------
+
 class ConfigManager:
     def __init__(self, filename="config.json"):
         self.filename = filename
@@ -253,6 +274,7 @@ class ServerTab(QWidget):
         self.edit_install = QLineEdit("")
         self.edit_install.setReadOnly(True)
         self.button_set_loc = QPushButton("Set Location")
+        self.button_set_loc.clicked.connect(self.set_install_location)  
     
         self.header_layout.addWidget(label_version, 1, 0)
         self.header_layout.addWidget(self.edit_version, 1, 1, 1, 2)
@@ -477,8 +499,6 @@ class ServerTab(QWidget):
         #
         self.button_start.clicked.connect(self.start_server)
         self.button_upgrade.clicked.connect(self.upgrade_server)
-        self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
-        self.button_download_steamcmd.clicked.connect(self.download_steamcmd)
         # etc...
     
         self.last_backup_time = None  # Initialize the timer variable
@@ -1039,6 +1059,13 @@ class ServerTab(QWidget):
         except Exception as e:
             print(f"[AutoBackup] Cleanup error: {e}")
 
+    def set_install_location(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Installation Folder")
+        if folder:
+            self.edit_install.setText(folder)
+            # Optionally, if the installation folder is meant to be the server folder:
+            self.server_folder = folder
+
     # -------------------------
     # Import / Start
     # -------------------------
@@ -1053,7 +1080,7 @@ class ServerTab(QWidget):
             # Dynamically parse logs for Ark version
             version = get_ark_version_from_logs(folder)
             self.edit_version.setText(version)
-
+   
     def start_server(self):
         """
         Starts the ARK server using ArkAscendedServer.exe and custom command-line arguments.
@@ -1070,6 +1097,15 @@ class ServerTab(QWidget):
     
         # Construct the correct path to ArkAscendedServer.exe
         exe_file = os.path.join(self.server_folder, "ShooterGame", "Binaries", "Win64", "ArkAscendedServer.exe")
+    
+        # Construct the path to GameUserSettings.ini
+        ini_path = os.path.join(
+            self.edit_install.text(),
+            "ShooterGame", "Saved", "Config", "WindowsServer", "GameUserSettings.ini"
+        )
+        
+        # Update the session name in the ini file to match the profile name
+        update_session_name(ini_path, self.edit_profile.text())
         
         if not os.path.exists(exe_file):
             QMessageBox.critical(self, "Error", f"Server executable not found:\n{exe_file}")
@@ -1101,7 +1137,6 @@ class ServerTab(QWidget):
     
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to start the server: {str(e)}")
-
 
     def stop_server(self):
         """
