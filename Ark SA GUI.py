@@ -351,6 +351,18 @@ class ServerTab(QWidget):
         self.backup_interval_combo.setFixedWidth(180)
         interval_layout.addWidget(self.backup_interval_combo)
         auto_backup_layout.addLayout(interval_layout)
+
+        # Backup Folders to Keep
+        keep_layout = QHBoxLayout()
+        keep_layout.setAlignment(Qt.AlignLeft)
+        keep_layout.addWidget(QLabel("Backup Folders to Keep:"))
+        
+        self.backup_keep_combo = QComboBox()
+        self.backup_keep_combo.addItems(["10", "20", "30", "40", "50", "100"])
+        self.backup_keep_combo.setFixedWidth(100)
+        keep_layout.addWidget(self.backup_keep_combo)
+        
+        auto_backup_layout.addLayout(keep_layout)
     
         # Backup Destination
         dest_layout = QHBoxLayout()
@@ -943,6 +955,22 @@ class ServerTab(QWidget):
     
         except Exception as e:
             QMessageBox.critical(self, "Backup Failed", str(e))
+
+        # --- Delete oldest backups if over the limit ---
+        try:
+            max_backups = int(self.backup_keep_combo.currentText())
+            # Get list of all zip backups, sorted by creation time (oldest first)
+            backup_files = sorted(
+                [os.path.join(profile_backup_dir, f) for f in os.listdir(profile_backup_dir) if f.endswith(".zip")],
+                key=os.path.getctime
+            )
+            # If we have more than allowed, delete oldest
+            while len(backup_files) > max_backups:
+                to_delete = backup_files.pop(0)
+                os.remove(to_delete)
+                print(f"[AutoBackup] Deleted oldest backup: {to_delete}")
+        except Exception as e:
+            print(f"[AutoBackup] Cleanup error: {e}")
 
     # -------------------------
     # Import / Start
