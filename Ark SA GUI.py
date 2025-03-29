@@ -10,6 +10,7 @@ import zipfile
 import datetime
 import shutil
 import time
+import ctypes
 import glob
 import re
 
@@ -49,6 +50,72 @@ def get_ark_version_from_logs(server_folder):
     except Exception as e:
         print("Error reading log:", e)
     return "Unknown"
+
+def add_firewall_rule(rule_name, protocol, port):
+    # Optionally remove an existing rule with the same name
+    try:
+        subprocess.run(
+            ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={rule_name}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+        )
+    except subprocess.CalledProcessError:
+        # It’s okay if the rule did not exist.
+        pass
+
+    # Build the command to add the rule
+    cmd = [
+        "netsh", "advfirewall", "firewall", "add", "rule",
+        f"name={rule_name}",
+        "dir=in", "action=allow", f"protocol={protocol}",
+        f"localport={port}"
+    ]
+    subprocess.run(cmd, check=True)
+
+def add_dynamic_firewall_rules(profile, launch_args, game_user_settings_ini_path):
+    # Extract the primary port from launch arguments
+    main_port_match = re.search(r"Port=(\d+)", launch_args)
+    if main_port_match:
+        main_port = int(main_port_match.group(1))
+    else:
+        print("Main port not found in launch arguments.")
+        return
+
+    # Extract the QueryPort value from launch arguments
+    query_port_match = re.search(r"QueryPort=(\d+)", launch_args)
+    query_port = int(query_port_match.group(1)) if query_port_match else None
+
+    # Calculate the additional port as main_port + 1
+    extra_port = main_port + 1
+
+    # Read GameUserSettings.ini to extract the RCONPort
+    rcon_port = None
+    try:
+        with open(game_user_settings_ini_path, "r") as ini_file:
+            for line in ini_file:
+                if "RCONPort=" in line:
+                    parts = line.strip().split("=")
+                    if len(parts) == 2 and parts[1].isdigit():
+                        rcon_port = int(parts[1])
+                        break
+    except Exception as e:
+        print("Error reading GameUserSettings.ini:", e)
+
+    # List of ports to add
+    ports = [main_port, extra_port]
+    if query_port is not None:
+        ports.append(query_port)
+    if rcon_port is not None:
+        ports.append(rcon_port)
+
+    # Add rules for both TCP and UDP for each port
+    for port in ports:
+        for proto in ["TCP", "UDP"]:
+            rule_name = f"Ark Server: {profile} {proto} Port {port}"
+            try:
+                add_firewall_rule(rule_name, proto, port)
+                print(f"Added firewall rule: {rule_name}")
+            except subprocess.CalledProcessError as e:
+                print(f"Failed to add rule {rule_name}: {e}")
 
 def copy_server_log_on_stop(server_folder, profile_name, log_dest_folder):
     """
@@ -1021,13 +1088,20 @@ class ServerTab(QWidget):
             self.label_status.setText("Status: Running")
             self.button_start.setText("Stop")
             self.button_start.setStyleSheet("background-color: red; color: white;")
-
-            # 1) Give ARK a moment to write logs
-            # 2) Then parse logs for "Ark Version: 61.74"
+    
+            # Add dynamic firewall rules.
+            # Build the path to GameUserSettings.ini:
+            game_user_settings_ini_path = os.path.join(
+                self.edit_install.text(), "ShooterGame", "Saved", "Config", "WindowsServer", "GameUserSettings.ini"
+            )
+            add_dynamic_firewall_rules(self.edit_profile.text(), self.edit_launch_args.text(), game_user_settings_ini_path)
+    
+            # Give ARK a moment to write logs, then update the version
             QTimer.singleShot(15_000, self.update_ark_version_from_logs)
-
+    
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to start the server: {str(e)}")
+
 
     def stop_server(self):
         """
