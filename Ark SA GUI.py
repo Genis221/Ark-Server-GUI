@@ -11,15 +11,17 @@ import datetime
 import shutil
 import time
 import ctypes
+import time
 import glob
 import re
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QGridLayout,
     QHBoxLayout, QLabel, QPushButton, QLineEdit, QFileDialog, QMessageBox, QAction,
-    QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout, QComboBox, QScrollArea, QFrame, QSizePolicy
+    QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout, QComboBox, QScrollArea, QFrame, QSizePolicy,
+    QPlainTextEdit
 )
-from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime
+from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime, QProcess, pyqtSignal, QThread
 
 # ---------------------------
 # 1) Extra Important Rules
@@ -875,9 +877,12 @@ class ServerTab(QWidget):
         Ensures administrator privileges, logs output in a structured folder, and delays execution.
         Shows only auto-dismiss messages when auto_update is True.
         """
+        import os, datetime, time
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QPlainTextEdit
+        from PyQt5.QtCore import QTimer
+    
         steamcmd_path = self.edit_steamcmd.text()
         steamcmd_exe = os.path.join(steamcmd_path, "steamcmd.exe")
-    
         if not os.path.exists(steamcmd_exe):
             if not auto_update:
                 QMessageBox.critical(self, "Error", "SteamCMD.exe not found. Please set the correct path.")
@@ -889,72 +894,88 @@ class ServerTab(QWidget):
                 QMessageBox.critical(self, "Error", "No installation path set.")
             return
     
-        # Set status to "Updating" in UI
+        # Set status to "Updating" and update UI immediately.
         self.label_status.setText("Status: Updating")
-        QApplication.processEvents()  # Immediately update UI
+        QApplication.processEvents()
     
-        # Delay to allow any prior dialogs to finish and give buffer time
+        # Small delay to let prior dialogs finish.
         time.sleep(3)
     
+        # Prepare log file details.
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         profile_name = self.edit_profile.text().strip().replace(" ", "_")
-        
-        # Use the user-defined Update Log Location from the GUI
-        log_base_folder = self.edit_update_log_location.text().strip()
-        
-        # Build: <YourLogLocation>/<ProfileName>_Update_Logs/
-        if not log_base_folder:
-            log_base_folder = server_path  # fallback
-        
+        log_base_folder = self.edit_update_log_location.text().strip() or server_path
         update_log_folder = os.path.join(log_base_folder, f"{profile_name}_Update_Logs")
         os.makedirs(update_log_folder, exist_ok=True)
-        
-        # Final log path
         log_file_path = os.path.join(update_log_folder, f"update_log_{timestamp}.log")
-
-        steamcmd_command = [
-            steamcmd_exe, "+login", "anonymous",
+    
+        # Build SteamCMD arguments.
+        arguments = [
+            "+login", "anonymous",
             "+force_install_dir", server_path,
             "+app_update", "2430930", "validate",
             "+quit"
         ]
     
-        try:
-            # Show initial message only if NOT auto update
-            if not auto_update:
-                self.auto_dismiss_message("Upgrade Running", "ARK Server is upgrading...", 10)
+        if not auto_update:
+            self.auto_dismiss_message("Upgrade Running", "ARK Server is upgrading...", 10)
     
-            with open(log_file_path, "w") as log_file:
-                process = subprocess.Popen(
-                    steamcmd_command,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
+        # Create a terminal dialog with a read-only text area.
+        terminalDialog = QDialog(self)
+        terminalDialog.setWindowTitle("Updating ARK Server")
+        layout = QVBoxLayout(terminalDialog)
+        terminalOutput = QPlainTextEdit(terminalDialog)
+        terminalOutput.setReadOnly(True)
+        layout.addWidget(terminalOutput)
+        terminalDialog.resize(600, 400)
     
-                for line in iter(process.stdout.readline, ""):
-                    log_file.write(line)
+        # Open log file for writing.
+        log_file = open(log_file_path, "w")
+    
+        # Create QProcess to run SteamCMD.
+        process = QProcess(self)
+        process.setProcessChannelMode(QProcess.MergedChannels)
+        process.setReadChannel(QProcess.StandardOutput)
+    
+        # Function to flush and display all available output.
+        def handle_output():
+            # Read in a loop until no more data is available.
+            while process.bytesAvailable() > 0:
+                data = process.readAllStandardOutput().data().decode("utf-8")
+                if data:
+                    terminalOutput.appendPlainText(data)
+                    log_file.write(data)
                     log_file.flush()
+                    QApplication.processEvents()
     
-                process.wait()
+        # Set up a timer to poll for output every 50ms.
+        polling_timer = QTimer(self)
+        polling_timer.timeout.connect(handle_output)
+        polling_timer.start(50)
     
-            # Set final status back to "Stopped" after update
+        def process_finished(exitCode, exitStatus):
+            polling_timer.stop()
+            # Flush any remaining output.
+            handle_output()
+            log_file.close()
+            terminalDialog.accept()  # Close the dialog.
             self.label_status.setText("Status: Stopped")
-    
-            # Show success message (only auto-dismiss if auto_update)
             if auto_update:
                 self.auto_dismiss_message("Update Complete", f"Update finished!\nLog saved:\n{log_file_path}", 10)
             else:
                 self.auto_dismiss_message("Update Complete", f"ARK Server update finished successfully!\nLogs saved at:\n{log_file_path}", 10)
-    
-            # If a restart or callback is passed in, call it after update is done
             if on_complete:
                 on_complete()
     
-        except Exception as e:
-            self.label_status.setText("Status: Stopped")  # Reset UI even on error
-            if not auto_update:
-                QMessageBox.critical(self, "Update Failed", f"Error: {str(e)}")
+        process.finished.connect(process_finished)
+    
+        # Start SteamCMD with the given arguments.
+        process.start(steamcmd_exe, arguments)
+    
+        # Show the terminal dialog (it remains open until the process finishes).
+        terminalDialog.exec_()
+
+
     def find_real_ark_pid(self):
         """
         Looks at the process we launched. If it spawned children,
