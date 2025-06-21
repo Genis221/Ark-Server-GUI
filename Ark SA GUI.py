@@ -446,16 +446,16 @@ class ServerTab(QWidget):
         auto_backup_layout.addLayout(interval_layout)
 
         # Backup Folders to Keep
-        keep_layout = QHBoxLayout()
-        keep_layout.setAlignment(Qt.AlignLeft)
-        keep_layout.addWidget(QLabel("Backup Folders to Keep:"))
+        backup_limit_layout = QHBoxLayout()
+        backup_limit_layout.setAlignment(Qt.AlignLeft)
+        backup_limit_layout.addWidget(QLabel("Backup Folders to Keep:"))
         
-        self.backup_keep_combo = QComboBox()
-        self.backup_keep_combo.addItems(["10", "20", "30", "40", "50", "100"])
-        self.backup_keep_combo.setFixedWidth(100)
-        keep_layout.addWidget(self.backup_keep_combo)
+        self.backup_limit_combo = QComboBox()
+        self.backup_limit_combo.addItems(["10", "20", "30", "40", "50", "100"])
+        self.backup_limit_combo.setFixedWidth(100)
+        backup_limit_layout.addWidget(self.backup_limit_combo)
         
-        auto_backup_layout.addLayout(keep_layout)
+        auto_backup_layout.addLayout(backup_limit_layout)
     
         # Backup Destination
         dest_layout = QHBoxLayout()
@@ -745,49 +745,47 @@ class ServerTab(QWidget):
           2. Optionally updates the server.
           3. Optionally restarts the server after ensuring it's fully terminated.
         """
-        if self.server_pid is not None:
+        if self.server_folder:
+            exe_name = "ArkAscendedServer.exe"
+            target_folder = os.path.normpath(self.server_folder)
+        
             try:
-                # Check if the process exists before attempting to kill it
-                for proc in psutil.process_iter(attrs=['pid', 'name']):
-                    if proc.info['pid'] == self.server_pid:
-                        proc = psutil.Process(self.server_pid)
-                        proc.terminate()  # Try to terminate first
-                        proc.wait(timeout=5)  # Wait 5 seconds for clean shutdown
-
-                        # If process is still running, forcefully kill it
-                        if proc.is_running():
-                            proc.kill()
-
-                        # Reset process tracking
-                        self.server_process = None
-                        self.server_pid = None
-
-                        # Update UI
-                        self.label_status.setText("Status: Stopped")
-                        self.button_start.setText("Start")
-                        self.button_start.setStyleSheet("background-color: green; color: white;")
-                        msg = QMessageBox(self)
-                        msg.setIcon(QMessageBox.Information)
-                        msg.setWindowTitle("Scheduled Action")
-                        profile_name = self.edit_profile.text()
-                        msg.setText(f"{profile_name} is being updated. Please wait for it to finish updating...")
-                        msg.setStandardButtons(QMessageBox.Ok)
-                        msg.show()
-                        
-                        # Auto-close after 10 seconds (10,000 ms)
-                        QTimer.singleShot(10_000, msg.accept)
-
-
-                        break  # Exit loop after finding and stopping the process
-
-            except psutil.NoSuchProcess:
-                self.server_process = None
-                self.server_pid = None
-                QMessageBox.warning(self, "Scheduled Action", "Server process not found, it may have already stopped.")
-            except psutil.AccessDenied:
-                QMessageBox.critical(self, "Error", "Access denied when trying to stop the process. Try running as administrator.")
+                for proc in psutil.process_iter(['pid', 'name', 'exe', 'cmdline']):
+                    if proc.info['name'] == exe_name:
+                        try:
+                            exe_path = os.path.normpath(proc.info['exe']) if proc.info['exe'] else ""
+                            if target_folder in exe_path:
+                                proc.terminate()
+                                proc.wait(timeout=5)
+                                if proc.is_running():
+                                    proc.kill()
+        
+                                # Reset tracking
+                                self.server_process = None
+                                self.server_pid = None
+        
+                                # Update UI
+                                self.label_status.setText("Status: Stopped")
+                                self.button_start.setText("Start")
+                                self.button_start.setStyleSheet("background-color: green; color: white;")
+        
+                                msg = QMessageBox(self)
+                                msg.setIcon(QMessageBox.Information)
+                                msg.setWindowTitle("Scheduled Action")
+                                profile_name = self.edit_profile.text()
+                                msg.setText(f"{profile_name} is being updated. Please wait for it to finish updating...")
+                                msg.setStandardButtons(QMessageBox.Ok)
+                                msg.show()
+        
+                                QTimer.singleShot(10_000, msg.accept)
+                                break
+        
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            continue
+        
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Unexpected error while stopping the server: {str(e)}")
+        
 
         def show_countdown_dialog(message):
             self.countdown = 10
@@ -1166,50 +1164,49 @@ class ServerTab(QWidget):
 
     def stop_server(self):
         """
-        Stops the ARK server process and immediately updates the UI status/button.
-        Ensures it's responsive even before the process is actually terminated.
+        Stops the ARK server process that matches this server tab.
+        Only stops the server located in self.server_folder.
         """
         if not self.server_folder:
             return
     
+        # Save logs first
         copy_server_log_on_stop(
             self.server_folder,
             self.edit_profile.text(),
             self.edit_log_location.text()
         )
-        
-        # Update GUI immediately
+    
+        # Update GUI
         self.label_status.setText("Status: Stopped")
         self.button_start.setText("Start")
         self.button_start.setStyleSheet("background-color: green; color: white;")
-        QApplication.processEvents()  # Force UI refresh before continuing
+        QApplication.processEvents()
     
-        # Proceed to locate and terminate the process
         exe_name = "ArkAscendedServer.exe"
+        target_folder = os.path.normpath(self.server_folder)
     
         try:
-            result = subprocess.run(
-                ["tasklist", "/FI", f"IMAGENAME eq {exe_name}", "/FO", "CSV"],
-                capture_output=True, text=True
-            )
+            for proc in psutil.process_iter(['pid', 'name', 'exe', 'cmdline']):
+                if proc.info['name'] == exe_name:
+                    try:
+                        exe_path = os.path.normpath(proc.info['exe']) if proc.info['exe'] else ""
+                        if target_folder in exe_path:
+                            proc.terminate()
+                            proc.wait(timeout=5)
+                            if proc.is_running():
+                                proc.kill()
+                            print(f"[INFO] Stopped server: {exe_path}")
+                            break
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
     
-            process_list = result.stdout.split("\n")
-            for line in process_list[1:]:  # Skip header
-                if exe_name in line:
-                    data = line.split(",")
-                    pid = data[1].strip('"')
-    
-                    # Terminate process
-                    subprocess.run(["taskkill", "/PID", pid, "/F"],
-                                   stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL)
-    
-            # Clear internal tracking
             self.server_process = None
             self.server_pid = None
     
         except Exception as e:
             print(f"[ERROR] Failed to stop server: {e}")
+
 
     def browse_steamcmd_location(self):
         """
@@ -1303,6 +1300,7 @@ class ServerTab(QWidget):
             "auto_backup_enabled": self.checkbox_enable_backup.isChecked(),
             "auto_backup_interval": self.backup_interval_combo.currentText(),
             "auto_backup_dest": self.edit_backup_dest.text(),
+            "backup_limit": self.backup_limit_combo.currentText(),
             "log_location": self.edit_log_location.text(),
             "update_log_location": self.edit_update_log_location.text(),
         }
@@ -1320,6 +1318,7 @@ class ServerTab(QWidget):
         self.checkbox_enable_backup.setChecked(info.get("auto_backup_enabled", False))
         self.backup_interval_combo.setCurrentText(info.get("auto_backup_interval", "30 mins"))
         self.edit_backup_dest.setText(info.get("auto_backup_dest", ""))
+        self.backup_limit_combo.setCurrentText(info.get("backup_limit", "10"))
         self.edit_log_location.setText(info.get("log_location", ""))
         self.edit_update_log_location.setText(info.get("update_log_location", ""))
 
