@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QGridLayout,
     QHBoxLayout, QLabel, QPushButton, QLineEdit, QFileDialog, QMessageBox, QAction,
     QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout, QComboBox, QScrollArea, QFrame, QSizePolicy,
-    QPlainTextEdit
+    QPlainTextEdit, QTextEdit
 )
 from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime, QProcess, pyqtSignal, QThread
 
@@ -155,8 +155,10 @@ def copy_server_log_on_stop(server_folder, profile_name, log_dest_folder):
         return
 
     # Format profile name and build destination folder
-    profile_folder_name = profile_name.strip().replace(" ", "_") + "_Logs"
-    full_dest_folder = os.path.join(log_dest_folder, profile_folder_name)
+    profile_clean = profile_name.strip()
+    subfolder_name = profile_clean.replace(" ", "_") + "_Game_Logs"
+    full_dest_folder = os.path.join(log_dest_folder, profile_clean, subfolder_name)
+    
     os.makedirs(full_dest_folder, exist_ok=True)
 
     # Generate timestamped filename
@@ -372,7 +374,7 @@ class ServerTab(QWidget):
         self.scroll_layout.addWidget(self.auto_start_group)
     
         # --- Automatic Shutdown ---
-        self.scheduler_group = QGroupBox("Automatic Shutdown")
+        self.scheduler_group = QGroupBox("Automatic Shutdown / Restart")
         scheduler_layout = QVBoxLayout()
         self.scheduler_group.setLayout(scheduler_layout)
     
@@ -903,9 +905,12 @@ class ServerTab(QWidget):
     
         # Prepare log file details.
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        profile_name = self.edit_profile.text().strip().replace(" ", "_")
+        profile_name = self.edit_profile.text().strip()
         log_base_folder = self.edit_update_log_location.text().strip() or server_path
-        update_log_folder = os.path.join(log_base_folder, f"{profile_name}_Update_Logs")
+        profile_clean = self.edit_profile.text().strip()
+        subfolder_name = profile_name + "_Update_Logs"
+        update_log_folder = os.path.join(log_base_folder, profile_clean, subfolder_name)
+        
         os.makedirs(update_log_folder, exist_ok=True)
         log_file_path = os.path.join(update_log_folder, f"update_log_{timestamp}.log")
     
@@ -918,7 +923,7 @@ class ServerTab(QWidget):
         ]
     
         if not auto_update:
-            self.auto_dismiss_message("Upgrade Running", "ARK Server is upgrading...", 10)
+            self.auto_dismiss_message("Update Running", "The Ark Server Manager is Verifying Server files and will update if needed...", 10)
     
         # Create a terminal dialog with a read-only text area.
         terminalDialog = QDialog(self)
@@ -1022,13 +1027,13 @@ class ServerTab(QWidget):
             return
     
         # 3) Build profile folder
-        profile_name = self.edit_profile.text().strip().replace(" ", "_")
-        profile_backup_dir = os.path.join(backup_dest, f"{profile_name}_Backups")
+        profile_name = self.edit_profile.text().strip()
+        profile_backup_dir = os.path.join(backup_dest, f"{profile_name} Backups")
         os.makedirs(profile_backup_dir, exist_ok=True)
     
         # 4) Zip the saves with timestamp
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        zip_name = f"{profile_name}_backup_{timestamp}.zip"
+        timestamp = datetime.datetime.now().strftime("%Y%m%d %H%M%S")
+        zip_name = f"{profile_name} Backup {timestamp}.zip"
         zip_path = os.path.join(profile_backup_dir, zip_name)
     
         try:
@@ -1348,7 +1353,7 @@ class ServerTab(QWidget):
 class ArkServerManager(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ARK Server Manager")
+        self.setWindowTitle("Ark: Survival Ascended Server Manager")
         self.resize(1200, 700)
 
         self.config_manager = ConfigManager()
@@ -1401,20 +1406,24 @@ class ArkServerManager(QMainWindow):
 
         # Let the tab bar resize with text
         tab_bar = self.tabs.tabBar()
-        tab_bar.setExpanding(False)         # Tabs only as wide as their content
-        tab_bar.setElideMode(Qt.ElideNone)  # No "..." truncation
-        tab_bar.setUsesScrollButtons(True)  # Horizontal scroll if tabs exceed width
+        tab_bar.setExpanding(False)
+        tab_bar.setElideMode(Qt.ElideNone)
+        tab_bar.setUsesScrollButtons(True)
+        tab_bar.setMovable(True)  # Optional: allow dragging tabs
+
         
         self.tabs.setStyleSheet("""
             QTabBar::tab {
-                padding: 7px 14px;    /* More space for text */
+                padding: 4px 8px;
                 margin: 1px;
-                font-size: 11px;      /* Optional: bigger font */
+                font-size: 10px;
+                max-width: 150px;  /* Optional: enforce width cap */
             }
             QTabBar::tab:selected {
                 font-weight: bold;
             }
         """)
+
 
 
         # "+" button
