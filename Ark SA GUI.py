@@ -16,16 +16,45 @@ import glob
 import re
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QGridLayout,
+    QApplication, QMainWindow, QTabWidget, QWidget, QGridLayout,
     QHBoxLayout, QLabel, QPushButton, QLineEdit, QFileDialog, QMessageBox, QAction,
     QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout, QComboBox, QScrollArea, QFrame, QSizePolicy,
     QPlainTextEdit, QTextEdit
 )
-from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime, QProcess, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime, QProcess, pyqtSignal, QThread, QObject
+from PyQt5.QtGui import QColor
 
 # ---------------------------
 # 1) Extra Important Rules
 # ---------------------------
+
+# Darker green and red (muted tones)
+DARK_GREEN = QColor("#228B22")  # forest green
+DARK_RED = QColor("#CE2029")    # dark red
+
+class BackupWorker(QObject):
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+
+    def __init__(self, server_folder, backup_dest, profile_name, zip_path):
+        super().__init__()
+        self.server_folder = server_folder
+        self.backup_dest = backup_dest
+        self.profile_name = profile_name
+        self.zip_path = zip_path
+
+    def run(self):
+        try:
+            saved_folder = os.path.join(self.server_folder, "ShooterGame", "Saved", "SavedArks")
+            with zipfile.ZipFile(self.zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(saved_folder):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, start=saved_folder)
+                        zipf.write(file_path, arcname=arcname)
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(str(e))
 
 def update_session_name(ini_path, new_session_name):
     """
@@ -74,26 +103,38 @@ def get_ark_version_from_logs(server_folder):
     return "Unknown"
 
 def add_firewall_rule(rule_name, protocol, port):
-    # Optionally remove an existing rule with the same name
+    """
+    Adds a firewall rule only if it doesn't already exist.
+    Returns True if rule exists or is added; False if adding fails.
+    """
     try:
-        subprocess.run(
-            ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={rule_name}"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+        result = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "show", "rule", f"name={rule_name}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True
         )
+        if "No rules match the specified criteria" not in result.stdout:
+            print(f"[Firewall] Rule already exists: {rule_name} — Skipping")
+            return True  # ✅ Exists = Success
+    except Exception as e:
+        print(f"[Firewall] Error checking rule: {rule_name} — {e}")
+        return False
+
+    try:
+        subprocess.run([
+            "netsh", "advfirewall", "firewall", "add", "rule",
+            f"name={rule_name}",
+            "dir=in", "action=allow", f"protocol={protocol}",
+            f"localport={port}"
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        print(f"[Firewall] Successfully added: {rule_name}")
+        return True  # ✅ Added = Success
     except subprocess.CalledProcessError:
-        # It’s okay if the rule did not exist.
-        pass
+        print(f"[Firewall] ❌ Failed to add: {rule_name} — Need Admin?")
+        return False
 
-    # Build the command to add the rule
-    cmd = [
-        "netsh", "advfirewall", "firewall", "add", "rule",
-        f"name={rule_name}",
-        "dir=in", "action=allow", f"protocol={protocol}",
-        f"localport={port}"
-    ]
-    subprocess.run(cmd, check=True)
-
-def add_dynamic_firewall_rules(profile, launch_args, game_user_settings_ini_path):
+def add_dynamic_firewall_rules(tab, profile, launch_args, game_user_settings_ini_path):
     # Extract the primary port from launch arguments
     main_port_match = re.search(r"Port=(\d+)", launch_args)
     if main_port_match:
@@ -130,14 +171,23 @@ def add_dynamic_firewall_rules(profile, launch_args, game_user_settings_ini_path
         ports.append(rcon_port)
 
     # Add rules for both TCP and UDP for each port
+    success = True
+    
     for port in ports:
         for proto in ["TCP", "UDP"]:
             rule_name = f"Ark Server: {profile} {proto} Port {port}"
-            try:
-                add_firewall_rule(rule_name, proto, port)
-                print(f"Added firewall rule: {rule_name}")
-            except subprocess.CalledProcessError as e:
-                print(f"Failed to add rule {rule_name}: {e}")
+            added = add_firewall_rule(rule_name, proto, port)
+            if not added:
+                success = False
+    
+    # Update the UI label after all attempts
+    if hasattr(tab, "label_firewall"):
+        if success:
+            tab.label_firewall.setText("Firewall Status: Good")
+            tab.label_firewall.setStyleSheet("color: green;")
+        else:
+            tab.label_firewall.setText("Firewall Status: Bad – Need Admin Permission")
+            tab.label_firewall.setStyleSheet("color: red;")
 
 def copy_server_log_on_stop(server_folder, profile_name, log_dest_folder):
     """
@@ -209,6 +259,7 @@ class ServerTab(QWidget):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.firewall_status = "Unknown"  # Can be: Good, Bad, Unknown
         self.server_folder = ""
         self.server_process = None
 
@@ -219,6 +270,63 @@ class ServerTab(QWidget):
         self.init_scheduler_timer()
         self.init_auto_start_timer()
 
+    def verify_firewall_status(self):
+        """
+        Checks all firewall rules again and re-attempts to add them if needed.
+        Updates the label and status tracker.
+        """
+        profile = self.edit_profile.text()
+        launch_args = self.edit_launch_args.text()
+        ini_path = os.path.join(self.edit_install.text(), "ShooterGame", "Saved", "Config", "WindowsServer", "GameUserSettings.ini")
+    
+        # Extract ports
+        main_port = int(re.search(r"Port=(\d+)", launch_args).group(1)) if "Port=" in launch_args else None
+        query_port = int(re.search(r"QueryPort=(\d+)", launch_args).group(1)) if "QueryPort=" in launch_args else None
+        extra_port = main_port + 1 if main_port else None
+    
+        # Try to get RCON port from file
+        rcon_port = None
+        try:
+            with open(ini_path, "r") as f:
+                for line in f:
+                    if "RCONPort=" in line:
+                        rcon_port = int(line.strip().split("=")[1])
+                        break
+        except:
+            pass
+    
+        ports = [p for p in [main_port, extra_port, query_port, rcon_port] if p]
+    
+        success = True
+        for port in ports:
+            for proto in ["TCP", "UDP"]:
+                rule_name = f"Ark Server: {profile} {proto} Port {port}"
+                added = add_firewall_rule(rule_name, proto, port)
+                if not added:
+                    success = False
+    
+        # Update status and UI
+        if success:
+            self.label_firewall.setText("Firewall Status: Good")
+            self.label_firewall.setStyleSheet("color: #006400;")
+            self.firewall_status = "Good"
+        else:
+            self.label_firewall.setText("Firewall Status: Bad – Need Admin Permission")
+            self.label_firewall.setStyleSheet("color: red;")
+            self.firewall_status = "Bad"
+
+    def update_tab_color(self, is_running: bool):
+        """
+        Changes the tab color to darker green (online) or darker red (offline).
+        """
+        main_window = self.window()
+        if isinstance(main_window, QMainWindow) and hasattr(main_window, 'tabs'):
+            tab_index = main_window.tabs.indexOf(self)
+            if tab_index >= 0:
+                color = QColor("#228B22") if is_running else QColor("#CE2029")
+                main_window.tabs.tabBar().setTabTextColor(tab_index, color)
+
+    
     def browse_backup_destination(self):
         """
         Opens a folder picker dialog for selecting a backup destination,
@@ -307,11 +415,15 @@ class ServerTab(QWidget):
     
         # Row 4: Status, Availability, Players, Upgrade/Verify
         self.label_status = QLabel("Status: Stopped")
+        self.label_firewall = QLabel("Firewall Status: Not Checked")
         self.label_availability = QLabel("Availability: Offline")
         self.label_players = QLabel("Players: 0 / 25")
         self.button_upgrade = QPushButton("Update / Verify")
     
-        self.header_layout.addWidget(self.label_status,       4, 0, 1, 2)
+        status_layout = QVBoxLayout()
+        status_layout.addWidget(self.label_status)
+        status_layout.addWidget(self.label_firewall)
+        self.header_layout.addLayout(status_layout, 4, 0, 1, 2)
         self.header_layout.addWidget(self.label_availability, 4, 2, 1, 3)
         self.header_layout.addWidget(self.label_players,      4, 5, 1, 2)
         self.header_layout.addWidget(self.button_upgrade,     4, 7)
@@ -407,8 +519,7 @@ class ServerTab(QWidget):
     
         # Row 6: Server Configuration Collapsible Section
         self.config_group = QGroupBox("Server Configuration")
-        self.config_group.setCheckable(True)
-        self.config_group.setChecked(False)
+        self.config_group.setCheckable(False)
     
         config_layout = QVBoxLayout()
         self.button_edit_game_ini = QPushButton("Edit Game")
@@ -509,6 +620,12 @@ class ServerTab(QWidget):
         self.backup_timer = QTimer(self)
         self.backup_timer.timeout.connect(self.check_auto_backup)
         self.backup_timer.start(60 * 1000)  # every 60 seconds
+
+        self.firewall_timer = QTimer(self)
+        self.firewall_timer.timeout.connect(self.verify_firewall_status)
+        self.firewall_timer.start(5 * 60 * 1000)  # 5 minutes
+        self.verify_firewall_status()
+
         
         
     def edit_config_file(self, filename):
@@ -877,10 +994,7 @@ class ServerTab(QWidget):
         Ensures administrator privileges, logs output in a structured folder, and delays execution.
         Shows only auto-dismiss messages when auto_update is True.
         """
-        import os, datetime, time
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QPlainTextEdit
-        from PyQt5.QtCore import QTimer
-    
+        
         steamcmd_path = self.edit_steamcmd.text()
         steamcmd_exe = os.path.join(steamcmd_path, "steamcmd.exe")
         if not os.path.exists(steamcmd_exe):
@@ -897,22 +1011,17 @@ class ServerTab(QWidget):
         # Set status to "Updating" and update UI immediately.
         self.label_status.setText("Status: Updating")
         QApplication.processEvents()
-    
-        # Small delay to let prior dialogs finish.
         time.sleep(3)
     
-        # Prepare log file details.
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         profile_name = self.edit_profile.text().strip()
         log_base_folder = self.edit_update_log_location.text().strip() or server_path
         profile_clean = self.edit_profile.text().strip()
         subfolder_name = profile_name + "_Update_Logs"
         update_log_folder = os.path.join(log_base_folder, profile_clean, subfolder_name)
-        
         os.makedirs(update_log_folder, exist_ok=True)
         log_file_path = os.path.join(update_log_folder, f"update_log_{timestamp}.log")
     
-        # Build SteamCMD arguments.
         arguments = [
             "+login", "anonymous",
             "+force_install_dir", server_path,
@@ -923,45 +1032,61 @@ class ServerTab(QWidget):
         if not auto_update:
             self.auto_dismiss_message("Update Running", "The Ark Server Manager is Verifying Server files and will update if needed...", 10)
     
-        # Create a terminal dialog with a read-only text area.
         terminalDialog = QDialog(self)
-        terminalDialog.setWindowTitle("Updating ARK Server")
+        profile_name = self.edit_profile.text().strip()
+        terminalDialog.setWindowTitle(f"Updating {profile_name} Server")    
+        terminalDialog.setWindowFlag(Qt.WindowCloseButtonHint, False)
         layout = QVBoxLayout(terminalDialog)
         terminalOutput = QPlainTextEdit(terminalDialog)
         terminalOutput.setReadOnly(True)
         layout.addWidget(terminalOutput)
         terminalDialog.resize(600, 400)
     
-        # Open log file for writing.
         log_file = open(log_file_path, "w")
     
-        # Create QProcess to run SteamCMD.
-        process = QProcess(self)
-        process.setProcessChannelMode(QProcess.MergedChannels)
-        process.setReadChannel(QProcess.StandardOutput)
+        class UpdateWorker(QObject):
+            output = pyqtSignal(str)
+            finished = pyqtSignal()
+            error = pyqtSignal(str)
     
-        # Function to flush and display all available output.
-        def handle_output():
-            # Read in a loop until no more data is available.
-            while process.bytesAvailable() > 0:
-                data = process.readAllStandardOutput().data().decode("utf-8")
-                if data:
-                    terminalOutput.appendPlainText(data)
-                    log_file.write(data)
-                    log_file.flush()
-                    QApplication.processEvents()
+            def run(self):
+                try:
+                    process = QProcess()
+                    process.setProcessChannelMode(QProcess.MergedChannels)
+                    process.setReadChannel(QProcess.StandardOutput)
     
-        # Set up a timer to poll for output every 50ms.
-        polling_timer = QTimer(self)
-        polling_timer.timeout.connect(handle_output)
-        polling_timer.start(50)
+                    def handle_output():
+                        while process.bytesAvailable() > 0:
+                            data = process.readAllStandardOutput().data().decode("utf-8")
+                            if data:
+                                self.output.emit(data)
     
-        def process_finished(exitCode, exitStatus):
-            polling_timer.stop()
-            # Flush any remaining output.
-            handle_output()
+                    process.readyRead.connect(handle_output)
+    
+                    def process_done(exitCode, exitStatus):
+                        handle_output()
+                        self.finished.emit()
+    
+                    process.finished.connect(process_done)
+                    process.start(steamcmd_exe, arguments)
+                    process.waitForFinished(-1)
+    
+                except Exception as e:
+                    self.error.emit(str(e))
+    
+        self.update_thread = QThread(self)  # tied to ServerTab, won't auto-delete
+        self.update_worker = UpdateWorker()
+        self.update_worker.moveToThread(self.update_thread)
+    
+        def update_terminal_output(text):
+            terminalOutput.appendPlainText(text)
+            log_file.write(text)
+            log_file.flush()
+            QApplication.processEvents()
+    
+        def update_complete():
             log_file.close()
-            terminalDialog.accept()  # Close the dialog.
+            terminalDialog.accept()
             self.label_status.setText("Status: Stopped")
             if auto_update:
                 self.auto_dismiss_message("Update Complete", f"Update finished!\nLog saved:\n{log_file_path}", 10)
@@ -969,14 +1094,29 @@ class ServerTab(QWidget):
                 self.auto_dismiss_message("Update Complete", f"ARK Server update finished successfully!\nLogs saved at:\n{log_file_path}", 10)
             if on_complete:
                 on_complete()
+            self.update_thread.quit()
+            self.update_worker.deleteLater()
+            self.update_thread.deleteLater()
     
-        process.finished.connect(process_finished)
+        def update_error(err):
+            log_file.close()
+            terminalDialog.accept()
+            QMessageBox.critical(self, "Update Error", err)
+            self.label_status.setText("Status: Stopped")
+            self.update_thread.quit()
+            self.update_worker.deleteLater()
+            self.update_thread.deleteLater()
     
-        # Start SteamCMD with the given arguments.
-        process.start(steamcmd_exe, arguments)
+        self.update_worker.output.connect(update_terminal_output)
+        self.update_worker.finished.connect(update_complete)
+        self.update_worker.error.connect(update_error)
     
-        # Show the terminal dialog (it remains open until the process finishes).
-        terminalDialog.exec_()
+        self.update_thread.started.connect(self.update_worker.run)
+        self.update_thread.start()
+        terminalDialog.setModal(False)
+        terminalDialog.show()
+
+
 
 
     def find_real_ark_pid(self):
@@ -1007,49 +1147,69 @@ class ServerTab(QWidget):
         """
         Zips the 'ShooterGame/Saved' folder into a timestamped ZIP
         and places it into a profile-named folder inside the user-chosen backup destination.
+        This now runs in a thread to prevent UI freezing.
         """
         if not self.server_folder:
             QMessageBox.warning(self, "No Server Folder", "Please import a server first.")
             return
     
-        # 1) Read the backup destination from GUI
         backup_dest = self.edit_backup_dest.text().strip()
         if not backup_dest:
             QMessageBox.warning(self, "No Backup Destination", "Please select a backup folder.")
             return
     
-        # 2) The ARK 'Saved' folder
         saved_folder = os.path.join(self.server_folder, "ShooterGame", "Saved", "SavedArks")
         if not os.path.exists(saved_folder):
             QMessageBox.warning(self, "Folder Missing", f"Cannot find: {saved_folder}")
             return
     
-        # 3) Build profile folder
         profile_name = self.edit_profile.text().strip()
         profile_backup_dir = os.path.join(backup_dest, f"{profile_name} Backups")
         os.makedirs(profile_backup_dir, exist_ok=True)
     
-        # 4) Zip the saves with timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d %H%M%S")
         zip_name = f"{profile_name} Backup {timestamp}.zip"
         zip_path = os.path.join(profile_backup_dir, zip_name)
     
-        try:
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for root, dirs, files in os.walk(saved_folder):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, start=saved_folder)
-                        zipf.write(file_path, arcname=arcname)
+        self.label_status.setText("Status: Running, Backing up")
+        QApplication.processEvents()
     
+        from PyQt5.QtCore import QObject, QThread, pyqtSignal
+    
+        class BackupWorker(QObject):
+            finished = pyqtSignal()
+            error = pyqtSignal(str)
+    
+            def run(self):
+                try:
+                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                        for root, dirs, files in os.walk(saved_folder):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                arcname = os.path.relpath(file_path, start=saved_folder)
+                                zipf.write(file_path, arcname=arcname)
+                    self.finished.emit()
+                except Exception as e:
+                    self.error.emit(str(e))
+    
+        self.backup_thread = QThread()
+        self.backup_worker = BackupWorker()
+        self.backup_worker.moveToThread(self.backup_thread)
+    
+        self.backup_worker.finished.connect(self.backup_thread.quit)
+        self.backup_worker.finished.connect(self.backup_worker.deleteLater)
+        self.backup_thread.finished.connect(self.backup_thread.deleteLater)
+    
+        def on_backup_complete():
             msg = QMessageBox(self)
             msg.setWindowTitle("Backup Complete")
+            self.label_status.setText("Status: Running")
+            QApplication.processEvents()
             msg.setText(f"Backup saved to:\n{zip_path}\n\nThis will close in 10 seconds...")
             msg.setIcon(QMessageBox.Information)
             msg.setStandardButtons(QMessageBox.Ok)
             msg.show()
-            
-            # Countdown and auto-close
+    
             self.backup_countdown = 10
             def update_msg():
                 self.backup_countdown -= 1
@@ -1058,30 +1218,35 @@ class ServerTab(QWidget):
                     timer.stop()
                 else:
                     msg.setText(f"Backup saved to:\n{zip_path}\n\nThis will close in {self.backup_countdown} seconds...")
-            
+    
             timer = QTimer(self)
             timer.timeout.connect(update_msg)
             timer.start(1000)
-
     
-        except Exception as e:
-            QMessageBox.critical(self, "Backup Failed", str(e))
+            try:
+                max_backups = int(self.backup_limit_combo.currentText())
+                backup_files = sorted(
+                    [os.path.join(profile_backup_dir, f) for f in os.listdir(profile_backup_dir) if f.endswith(".zip")],
+                    key=os.path.getctime
+                )
+                while len(backup_files) > max_backups:
+                    to_delete = backup_files.pop(0)
+                    os.remove(to_delete)
+                    print(f"[AutoBackup] Deleted oldest backup: {to_delete}")
+            except Exception as e:
+                print(f"[AutoBackup] Cleanup error: {e}")
+    
+        def on_backup_error(msg):
+            self.label_status.setText("Status: Running")
+            QApplication.processEvents()
+            QMessageBox.critical(self, "Backup Failed", msg)
+    
+        self.backup_worker.finished.connect(on_backup_complete)
+        self.backup_worker.error.connect(on_backup_error)
+    
+        self.backup_thread.started.connect(self.backup_worker.run)
+        self.backup_thread.start()
 
-        # --- Delete oldest backups if over the limit ---
-        try:
-            max_backups = int(self.backup_keep_combo.currentText())
-            # Get list of all zip backups, sorted by creation time (oldest first)
-            backup_files = sorted(
-                [os.path.join(profile_backup_dir, f) for f in os.listdir(profile_backup_dir) if f.endswith(".zip")],
-                key=os.path.getctime
-            )
-            # If we have more than allowed, delete oldest
-            while len(backup_files) > max_backups:
-                to_delete = backup_files.pop(0)
-                os.remove(to_delete)
-                print(f"[AutoBackup] Deleted oldest backup: {to_delete}")
-        except Exception as e:
-            print(f"[AutoBackup] Cleanup error: {e}")
 
     def set_install_location(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Installation Folder")
@@ -1148,13 +1313,18 @@ class ServerTab(QWidget):
             self.label_status.setText("Status: Running")
             self.button_start.setText("Stop")
             self.button_start.setStyleSheet("background-color: red; color: white;")
+            self.update_tab_color(is_running=True)
     
             # Add dynamic firewall rules.
             # Build the path to GameUserSettings.ini:
             game_user_settings_ini_path = os.path.join(
                 self.edit_install.text(), "ShooterGame", "Saved", "Config", "WindowsServer", "GameUserSettings.ini"
             )
-            add_dynamic_firewall_rules(self.edit_profile.text(), self.edit_launch_args.text(), game_user_settings_ini_path)
+            if self.firewall_status != "Good":
+                add_dynamic_firewall_rules(self, self.edit_profile.text(), self.edit_launch_args.text(), game_user_settings_ini_path)
+            else:
+                print("[Firewall] Skipping firewall rule check — already marked good.")
+
     
             # Give ARK a moment to write logs, then update the version
             QTimer.singleShot(15_000, self.update_ark_version_from_logs)
@@ -1181,6 +1351,7 @@ class ServerTab(QWidget):
         self.label_status.setText("Status: Stopped")
         self.button_start.setText("Start")
         self.button_start.setStyleSheet("background-color: green; color: white;")
+        self.update_tab_color(is_running=False)
         QApplication.processEvents()
     
         exe_name = "ArkAscendedServer.exe"
@@ -1452,6 +1623,7 @@ class ArkServerManager(QMainWindow):
                 new_tab = ServerTab()
                 new_tab.set_server_info(info)
                 index = self.tabs.addTab(new_tab, f"  {info.get('profile', 'New Server')}  ")
+                new_tab.update_tab_color(is_running=False)
                 new_tab.edit_profile.textChanged.connect(
                     lambda _, tab=new_tab: self.sync_tab_name(tab)
                 )
@@ -1462,6 +1634,7 @@ class ArkServerManager(QMainWindow):
     def add_new_tab(self):
         new_tab = ServerTab()
         index = self.tabs.addTab(new_tab, "New Server")
+        new_tab.update_tab_color(is_running=False)
         self.tabs.setCurrentIndex(index)
         new_tab.edit_profile.textChanged.connect(
             lambda _, tab=new_tab: self.sync_tab_name(tab)
