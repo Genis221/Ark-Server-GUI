@@ -32,6 +32,20 @@ from PyQt5.QtGui import QColor
 DARK_GREEN = QColor("#228B22")  # forest green
 DARK_RED = QColor("#CE2029")    # dark red
 
+class TerminalLogger:
+    def __init__(self, write_callback):
+        self.write_callback = write_callback
+
+    def write(self, message):
+        message = message.strip()
+        if message:
+            self.write_callback(message)
+            sys.__stdout__.write(message + "\n")  # Optional: still print to console too
+
+    def flush(self):
+        pass  # Required for compatibility with sys.stdout
+
+
 class BackupWorker(QObject):
     finished = pyqtSignal()
     error = pyqtSignal(str)
@@ -206,14 +220,14 @@ def copy_server_log_on_stop(server_folder, profile_name, log_dest_folder):
 
     # Format profile name and build destination folder
     profile_clean = profile_name.strip()
-    subfolder_name = profile_clean.replace(" ", "_") + "_Game_Logs"
+    subfolder_name = f"{profile_name.strip()} Game Logs"
     full_dest_folder = os.path.join(log_dest_folder, profile_clean, subfolder_name)
     
     os.makedirs(full_dest_folder, exist_ok=True)
 
     # Generate timestamped filename
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_filename = f"{profile_name.strip().replace(' ', '_')}_log_{timestamp}.log"
+    log_filename = f"{profile_name.strip()} Game Log {timestamp}.log"
     dest_path = os.path.join(full_dest_folder, log_filename)
 
     try:
@@ -991,7 +1005,7 @@ class ServerTab(QWidget):
         Ensures administrator privileges, logs output in a structured folder, and delays execution.
         Shows only auto-dismiss messages when auto_update is True.
         """
-        
+    
         steamcmd_path = self.edit_steamcmd.text()
         steamcmd_exe = os.path.join(steamcmd_path, "steamcmd.exe")
         if not os.path.exists(steamcmd_exe):
@@ -1014,10 +1028,11 @@ class ServerTab(QWidget):
         profile_name = self.edit_profile.text().strip()
         log_base_folder = self.edit_update_log_location.text().strip() or server_path
         profile_clean = self.edit_profile.text().strip()
-        subfolder_name = profile_name + "_Update_Logs"
+        subfolder_name = profile_name + " Update Logs"
         update_log_folder = os.path.join(log_base_folder, profile_clean, subfolder_name)
         os.makedirs(update_log_folder, exist_ok=True)
-        log_file_path = os.path.join(update_log_folder, f"update_log_{timestamp}.log")
+        safe_profile = profile_name.strip().replace("/", "-").replace("\\", "-")
+        log_file_path = os.path.join(update_log_folder, f"{profile_name} update log {timestamp}.log")
     
         arguments = [
             "+login", "anonymous",
@@ -1112,9 +1127,6 @@ class ServerTab(QWidget):
         self.update_thread.start()
         terminalDialog.setModal(False)
         terminalDialog.show()
-
-
-
 
     def find_real_ark_pid(self):
         """
