@@ -936,15 +936,12 @@ class ServerTab(QWidget):
 
             # If update checkbox is checked, show a single update message
             if self.checkbox_perform_update.isChecked():
-                is_auto_update = True  # Flag to indicate this is from Automatic Management
-                self.upgrade_server(is_auto_update)
-
+                is_auto_update = True
                 if self.checkbox_then_restart.isChecked():
-                    QTimer.singleShot(12_000, finish_and_restart)
+                    self.upgrade_server(is_auto_update, on_complete=finish_and_restart)
                 else:
-                    show_countdown_dialog("Server has shut down and updated.")
-            elif self.checkbox_then_restart.isChecked():
-                QTimer.singleShot(12_000, finish_and_restart)
+                    self.upgrade_server(is_auto_update, on_complete=lambda: show_countdown_dialog("Server has shut down and updated."))            
+                
             else:
                 show_countdown_dialog("Server has shut down.")
 
