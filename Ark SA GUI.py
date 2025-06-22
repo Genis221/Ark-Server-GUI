@@ -1653,10 +1653,24 @@ class ArkServerManager(QMainWindow):
         if self.tabs.count() == 1:
             QMessageBox.warning(self, "Cannot Close", "At least one server tab must remain open.")
             return
+    
         widget = self.tabs.widget(index)
+        profile_name = widget.edit_profile.text() if widget else "this server"
+    
+        reply = QMessageBox.question(
+            self,
+            "Confirm Delete",
+            f"Are you sure you want to delete the '{profile_name}' server tab?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+    
+        if reply != QMessageBox.Yes:
+            return
+    
         if widget:
             widget.deleteLater()
         self.tabs.removeTab(index)
+
 
     def save_all_tabs(self):
         servers = []
