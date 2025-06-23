@@ -14,6 +14,7 @@ import ctypes
 import time
 import glob
 import re
+import wexpect
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QGridLayout,
@@ -635,9 +636,10 @@ class ServerTab(QWidget):
         self.backup_timer.timeout.connect(self.check_auto_backup)
         self.backup_timer.start(60 * 1000)  # every 60 seconds
 
-        self.firewall_timer = QTimer(self)
-        self.firewall_timer.timeout.connect(self.verify_firewall_status)
-        self.firewall_timer.start(5 * 60 * 1000)  # 5 minutes
+        # — Disable automatic firewall checks to prevent random pop-ups —
+        # self.firewall_timer = QTimer(self)
+        # self.firewall_timer.timeout.connect(self.verify_firewall_status)
+        # self.firewall_timer.start(5 * 60 * 1000)  # 5 minutes
         self.verify_firewall_status()
 
         
