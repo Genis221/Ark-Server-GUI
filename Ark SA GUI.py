@@ -1271,63 +1271,93 @@ class ServerTab(QWidget):
         """
         Starts the ARK server using ArkAscendedServer.exe and custom command-line arguments.
         If the server is already running, this function will stop it instead.
+        Also kicks off version detection & automatic config save 15s after launch.
         """
         # If the server is already running, stop it
         if self.server_process is not None:
             self.stop_server()
             return
-    
+
         if not self.server_folder:
             QMessageBox.warning(self, "No Server Folder", "Please import a server first.")
             return
-    
+
         # Construct the correct path to ArkAscendedServer.exe
-        exe_file = os.path.join(self.server_folder, "ShooterGame", "Binaries", "Win64", "ArkAscendedServer.exe")
-    
+        exe_file = os.path.join(
+            self.server_folder,
+            "ShooterGame", "Binaries", "Win64", "ArkAscendedServer.exe"
+        )
+
         # Construct the path to GameUserSettings.ini
         ini_path = os.path.join(
             self.edit_install.text(),
             "ShooterGame", "Saved", "Config", "WindowsServer", "GameUserSettings.ini"
         )
-        
+
         # Update the session name in the ini file to match the profile name
         update_session_name(ini_path, self.edit_profile.text())
-        
+
         if not os.path.exists(exe_file):
             QMessageBox.critical(self, "Error", f"Server executable not found:\n{exe_file}")
             return
-    
+
         # Get command-line arguments from the GUI textbox
         args = self.edit_launch_args.text().strip()
         full_command = f'"{exe_file}" {args}'
-    
+
         try:
             # Start the server with command-line arguments
             self.server_process = subprocess.Popen(full_command, shell=True)
             self.server_pid = self.server_process.pid
-    
+
             # Update UI
             self.label_status.setText("Status: Running")
             self.button_start.setText("Stop")
             self.button_start.setStyleSheet("background-color: red; color: white;")
             self.update_tab_color(is_running=True)
-    
-            # Add dynamic firewall rules.
-            # Build the path to GameUserSettings.ini:
-            game_user_settings_ini_path = os.path.join(
-                self.edit_install.text(), "ShooterGame", "Saved", "Config", "WindowsServer", "GameUserSettings.ini"
-            )
+
+            # Add dynamic firewall rules
+            game_user_settings_ini_path = ini_path
             if self.firewall_status != "Good":
-                add_dynamic_firewall_rules(self, self.edit_profile.text(), self.edit_launch_args.text(), game_user_settings_ini_path)
+                add_dynamic_firewall_rules(
+                    self,
+                    self.edit_profile.text(),
+                    self.edit_launch_args.text(),
+                    game_user_settings_ini_path
+                )
             else:
                 print("[Firewall] Skipping firewall rule check — already marked good.")
 
-    
-            # Give ARK a moment to write logs, then update the version
+            # Give ARK a moment to write logs, then detect & save version
             QTimer.singleShot(15_000, self.update_ark_version_from_logs)
-    
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to start the server: {str(e)}")
+
+
+    def update_ark_version_from_logs(self):
+        """
+        Reads the latest ARK version from the log files,
+        updates the Installed Version field in the UI,
+        and writes only that version back into config.json for this tab.
+        """
+        try:
+            # 1) detect version
+            version = get_ark_version_from_logs(self.server_folder)
+            self.edit_version.setText(version)
+
+            # 2) persist to config.json
+            main_win = self.window()
+            if hasattr(main_win, 'config_manager'):
+                idx = main_win.tabs.indexOf(self)
+                if 0 <= idx < len(main_win.config_manager.data.get("servers", [])):
+                    main_win.config_manager.data["servers"][idx]["version"] = version
+                    main_win.config_manager.save_config()
+
+        except Exception as e:
+            # if version detection fails, log but don't interrupt the UI
+            print(f"[Version Detection] Failed to read or save version: {e}")
+
 
     def stop_server(self):
         """
