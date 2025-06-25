@@ -234,9 +234,10 @@ def copy_server_log_on_stop(server_folder, profile_name, log_dest_folder):
     try:
         shutil.copyfile(log_file_path, dest_path)
         print(f"[INFO] Log saved to: {dest_path}")
+        return dest_path
     except Exception as e:
         print(f"[ERROR] Failed to copy log file: {e}")
-
+        return None
 # ---------------------------
 # 1) ConfigManager
 # ---------------------------
@@ -878,90 +879,75 @@ class ServerTab(QWidget):
           2. Optionally updates the server.
           3. Optionally restarts the server after ensuring it's fully terminated.
         """
-        if self.server_folder:
-            exe_name = "ArkAscendedServer.exe"
-            target_folder = os.path.normpath(self.server_folder)
-        
-            try:
-                for proc in psutil.process_iter(['pid', 'name', 'exe', 'cmdline']):
-                    if proc.info['name'] == exe_name:
-                        try:
-                            exe_path = os.path.normpath(proc.info['exe']) if proc.info['exe'] else ""
-                            if target_folder in exe_path:
-                                proc.terminate()
-                                proc.wait(timeout=5)
-                                if proc.is_running():
-                                    proc.kill()
-        
-                                # Reset tracking
-                                self.server_process = None
-                                self.server_pid = None
-        
-                                # Update UI
-                                self.label_status.setText("Status: Stopped")
-                                self.button_start.setText("Start")
-                                self.button_start.setStyleSheet("background-color: green; color: white;")
-        
-                                msg = QMessageBox(self)
-                                msg.setIcon(QMessageBox.Information)
-                                msg.setWindowTitle("Scheduled Action")
-                                profile_name = self.edit_profile.text()
-                                msg.setText(f"{profile_name} is being updated. Please wait for it to finish updating...")
-                                msg.setStandardButtons(QMessageBox.Ok)
-                                msg.show()
-        
-                                QTimer.singleShot(10_000, msg.accept)
-                                break
-        
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            continue
-        
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Unexpected error while stopping the server: {str(e)}")
-        
+        if not self.server_folder:
+            return
 
-        def show_countdown_dialog(message):
-            self.countdown = 10
-            self.dialog = QMessageBox(self)
-            self.dialog.setWindowTitle("Scheduled Action Complete")
-            self.dialog.setText(f"{message}\n\nClosing in {self.countdown} seconds...")
-            self.dialog.setStandardButtons(QMessageBox.Ok)
-            self.dialog.setDefaultButton(QMessageBox.Ok)
+        exe_name = "ArkAscendedServer.exe"
+        target_folder = os.path.normpath(self.server_folder)
+        stopped = False
 
-            def update_dialog():
-                self.countdown -= 1
-                if self.countdown <= 0:
-                    self.dialog.done(0)
-                    self.auto_close_timer.stop()
-                else:
-                    self.dialog.setText(f"{message}\n\nClosing in {self.countdown} seconds...")
+        # 1) Locate and stop the server process
+        try:
+            for proc in psutil.process_iter(['pid', 'name', 'exe']):
+                if proc.info['name'] != exe_name:
+                    continue
 
-            self.auto_close_timer = QTimer()
-            self.auto_close_timer.timeout.connect(update_dialog)
-            self.auto_close_timer.start(1000)
-            self.dialog.show()
+                try:
+                    exe_path = proc.info['exe'] or ""
+                    exe_path = os.path.normpath(exe_path)
+                    if target_folder not in exe_path:
+                        continue
 
-        def finish_and_restart():
-            if self.checkbox_then_restart.isChecked():
-                self.start_server()
+                    # terminate the process
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                    if proc.is_running():
+                        proc.kill()
 
-            show_countdown_dialog("Server has restarted.")
+                    # reset tracking & update UI
+                    self.server_process = None
+                    self.server_pid = None
+                    self.label_status.setText("Status: Stopped")
+                    self.button_start.setText("Start")
+                    self.button_start.setStyleSheet("background-color: green; color: white;")
 
-        def stop_then_update_then_restart():
-            self.stop_server()
+                    # turn the tab label red to show it's offline
+                    self.update_tab_color(is_running=False)
 
-            # If update checkbox is checked, show a single update message
-            if self.checkbox_perform_update.isChecked():
-                is_auto_update = True
-                if self.checkbox_then_restart.isChecked():
-                    self.upgrade_server(is_auto_update, on_complete=finish_and_restart)
-                else:
-                    self.upgrade_server(is_auto_update, on_complete=lambda: show_countdown_dialog("Server has shut down and updated."))            
-                
-            else:
-                show_countdown_dialog("Server has shut down.")
+                    stopped = True
+                    break
 
-        stop_then_update_then_restart()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Unexpected error while stopping the server: {e}"
+            )
+            return
+
+        if not stopped:
+            # No matching process found
+            return
+
+        # 2) CLEAN UP: ensure any WorkerThread is fully stopped
+        if hasattr(self, 'worker_thread') and isinstance(self.worker_thread, QThread):
+            self.worker_thread.quit()
+            self.worker_thread.wait()
+
+        # 3) Kick off the updater (and restart when done, if requested)
+        if self.checkbox_perform_update.isChecked():
+            self.upgrade_server(
+                auto_update=True,
+                on_complete=lambda: (
+                    self.start_server()
+                    if self.checkbox_then_restart.isChecked()
+                    else None
+                )
+            )
+
 
     def stop_server(self):
         """Placeholder for stopping the server. If you have a process handle, you can terminate it."""
@@ -1043,8 +1029,8 @@ class ServerTab(QWidget):
             "+quit"
         ]
     
-        if not auto_update:
-            self.auto_dismiss_message("Update Running", "The Ark Server Manager is Verifying Server files and will update if needed...", 10)
+        # if not auto_update:
+          #   self.auto_dismiss_message("Update Running", "The Ark Server Manager is Verifying Server files and will update if needed...", 10)
     
         terminalDialog = QDialog(self)
         profile_name = self.edit_profile.text().strip()
