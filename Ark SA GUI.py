@@ -716,27 +716,31 @@ class ServerTab(QWidget):
             self.popup.setText(f"{message}\n\nThis message will close in {self.remaining_seconds} seconds.")
 
     def auto_dismiss_message(self, title, message, timeout=10):
-         """
-         Displays a message box that automatically closes after 'timeout' seconds.
-         The countdown is displayed in the message.
-         """
-         dialog = QMessageBox(QMessageBox.Information, title, message)
-         dialog.setStandardButtons(QMessageBox.NoButton)  # Remove OK button
-     
-         def update_message():
-             nonlocal timeout
-             if timeout > 0:
-                 dialog.setText(f"{message}\nClosing in {timeout} seconds...")
-                 timeout -= 1
-             else:
-                 dialog.done(0)  # Close message box
-     
-         timer = QTimer(self)
-         timer.timeout.connect(update_message)
-         timer.start(1000)  # Update every second
-     
-         dialog.exec_()
-         timer.stop()  # Stop timer when done
+        """
+        Displays a message box that automatically closes after 'timeout' seconds.
+        The countdown is displayed in the message, and the user can click OK to dismiss immediately.
+        """
+        dialog = QMessageBox(QMessageBox.Information, title, message)
+        dialog.setStandardButtons(QMessageBox.Ok)   # ← give it an OK button
+
+        # start a 1-second timer to update the countdown
+        timer = QTimer(self)
+        timer.setInterval(1000)
+
+        def update_message():
+            nonlocal timeout
+            if timeout > 0:
+                dialog.setText(f"{message}\nClosing in {timeout} seconds…")
+                timeout -= 1
+            else:
+                timer.stop()
+                dialog.done(0)  # auto-close
+        timer.timeout.connect(update_message)
+        timer.start()
+
+        dialog.exec_()  # blocks until OK is clicked or .done(0) is called
+        timer.stop()    # make sure the timer is cleaned up
+
 
     def update_ark_version_from_logs(self):
         """
@@ -1077,6 +1081,9 @@ class ServerTab(QWidget):
         self.update_thread = QThread(self)  # tied to ServerTab, won't auto-delete
         self.update_worker = UpdateWorker()
         self.update_worker.moveToThread(self.update_thread)
+        self.update_worker.finished.connect(self.update_thread.quit)
+        self.update_worker.finished.connect(self.update_worker.deleteLater)
+        self.update_thread.finished.connect(self.update_thread.deleteLater)
     
         def update_terminal_output(text):
             terminalOutput.appendPlainText(text)
@@ -1094,18 +1101,12 @@ class ServerTab(QWidget):
                 self.auto_dismiss_message("Update Complete", f"ARK Server update finished successfully!\nLogs saved at:\n{log_file_path}", 10)
             if on_complete:
                 on_complete()
-            self.update_thread.quit()
-            self.update_worker.deleteLater()
-            self.update_thread.deleteLater()
-    
+  
         def update_error(err):
             log_file.close()
             terminalDialog.accept()
             QMessageBox.critical(self, "Update Error", err)
             self.label_status.setText("Status: Stopped")
-            self.update_thread.quit()
-            self.update_worker.deleteLater()
-            self.update_thread.deleteLater()
     
         self.update_worker.output.connect(update_terminal_output)
         self.update_worker.finished.connect(update_complete)
@@ -1675,6 +1676,12 @@ class ArkServerManager(QMainWindow):
             text_with_spaces = f"  {profile_name}  "
             self.tabs.setTabText(i, text_with_spaces)
 
+    def closeEvent(self, event):
+        # if an update thread is still alive, stop it cleanly
+        if hasattr(self, 'update_thread') and self.update_thread.isRunning():
+            self.update_thread.quit()
+            self.update_thread.wait()
+        super().closeEvent(event)
 
     def close_tab(self, index):
         if self.tabs.count() == 1:
