@@ -501,11 +501,11 @@ class ServerTab(QWidget):
     
         self.scroll_layout.addWidget(self.auto_start_group)
     
-        # --- Automatic Shutdown ---
+        # --- Automatic Shutdown / Restart ---
         self.scheduler_group = QGroupBox("Automatic Shutdown / Restart")
-        scheduler_layout = QVBoxLayout()
-        self.scheduler_group.setLayout(scheduler_layout)
-    
+        scheduler_layout = QVBoxLayout(self.scheduler_group)
+        
+        # 1) Days of the week
         days_layout = QHBoxLayout()
         self.shutdown_days = []
         for day in ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]:
@@ -513,25 +513,56 @@ class ServerTab(QWidget):
             days_layout.addWidget(cb)
             self.shutdown_days.append(cb)
         scheduler_layout.addLayout(days_layout)
-    
-        time_layout = QHBoxLayout()
-        time_layout.setAlignment(Qt.AlignLeft)  # shift everything left
-        time_layout.addWidget(QLabel("Shutdown at:"))
-    
+        
+        # 2) Row 1 — Shutdown time + Perform update
+        shutdown_layout = QHBoxLayout()
+        shutdown_layout.setAlignment(Qt.AlignLeft)
+        shutdown_layout.addWidget(QLabel("Shutdown at:"))
+        
         self.shutdown_time_edit = QTimeEdit()
         self.shutdown_time_edit.setDisplayFormat("hh:mm AP")
         self.shutdown_time_edit.setTime(QTime(8, 0))
         self.shutdown_time_edit.setFixedWidth(180)
-        time_layout.addWidget(self.shutdown_time_edit)
-    
+        shutdown_layout.addWidget(self.shutdown_time_edit)
+        
+        # ← Perform update goes here now
         self.checkbox_perform_update = QCheckBox("Perform update")
-        self.checkbox_then_restart = QCheckBox("Then restart")
-        time_layout.addWidget(self.checkbox_perform_update)
-        time_layout.addWidget(self.checkbox_then_restart)
-    
-        scheduler_layout.addLayout(time_layout)
-    
+        shutdown_layout.addWidget(self.checkbox_perform_update)
+        
+        scheduler_layout.addLayout(shutdown_layout)
+        
+        # 3) Row 2 — Auto-Restart + Interval
+        # Row 2 — Auto-restart controls
+        restart_layout = QHBoxLayout()
+        restart_layout.setAlignment(Qt.AlignLeft)
+        
+        # 1) Auto-Restart?
+        self.checkbox_auto_restart = QCheckBox("Auto Restart in")
+        restart_layout.addWidget(self.checkbox_auto_restart)
+        
+        # 2) Interval dropdown
+        self.restart_interval_combo = QComboBox()
+        self.restart_interval_combo.addItems([
+            "30 mins","1 hr","2 hrs","3 hrs","4 hrs",
+            "5 hrs","6 hrs","7 hrs","8 hrs","9 hrs",
+            "10 hrs","11 hrs","12 hrs",
+        ])
+        self.restart_interval_combo.setFixedWidth(120)
+        restart_layout.addWidget(self.restart_interval_combo)
+        
+        # 3) Per-restart update
+        self.checkbox_restart_update = QCheckBox("Perform update every time it restarts")
+        restart_layout.addWidget(self.checkbox_restart_update)
+
+        # 4) Next‐restart time label
+        self.label_next_restart = QLabel("")
+        restart_layout.addWidget(self.label_next_restart)
+        
+        scheduler_layout.addLayout(restart_layout)
+
+        
         self.scroll_layout.addWidget(self.scheduler_group)
+
     
         # Row 6: Server Configuration Collapsible Section
         self.config_group = QGroupBox("Server Configuration")
@@ -643,7 +674,32 @@ class ServerTab(QWidget):
         # self.firewall_timer.start(5 * 60 * 1000)  # 5 minutes
         self.verify_firewall_status()
 
-        
+    def get_restart_interval_ms(self) -> int:
+        text = self.restart_interval_combo.currentText()
+        mapping = {
+            "30 mins": 30*60*1000,
+            "1 hr":   60*60*1000,
+            "2 hrs":  2*60*60*1000,
+            "3 hrs":  3*60*60*1000,
+            "4 hrs":  4*60*60*1000,
+            "5 hrs":  5*60*60*1000,
+            "6 hrs":  6*60*60*1000,
+            "7 hrs":  7*60*60*1000,
+            "8 hrs":  8*60*60*1000,
+            "9 hrs":  9*60*60*1000,
+            "10 hrs":10*60*60*1000,
+            "11 hrs":11*60*60*1000,
+            "12 hrs":12*60*60*1000,
+        }
+        return mapping.get(text, 0)
+  
+    def _maybe_restart_after_update(self):
+        # only restart if they ticked Auto Restart?
+        if self.checkbox_auto_restart.isChecked():
+            QTimer.singleShot(
+                self.get_restart_interval_ms(),
+                self.start_server
+            )
         
     def edit_config_file(self, filename):
         """
@@ -878,80 +934,136 @@ class ServerTab(QWidget):
 
     def perform_scheduled_actions(self):
         """
-        Executes the scheduled shutdown:
-          1. Finds and terminates the correct ARK server process.
-          2. Optionally updates the server.
-          3. Optionally restarts the server after ensuring it's fully terminated.
+        1. Stops the ARK server.
+        2. If “Perform update” is checked, runs that.
+        3. NEVER restarts here, even if Auto Restart? is ticked.
         """
         if not self.server_folder:
             return
-
+    
         exe_name = "ArkAscendedServer.exe"
-        target_folder = os.path.normpath(self.server_folder)
+        target = os.path.normpath(self.server_folder)
         stopped = False
-
-        # 1) Locate and stop the server process
+    
+        # Stop the process
         try:
-            for proc in psutil.process_iter(['pid', 'name', 'exe']):
+            for proc in psutil.process_iter(['name','exe']):
                 if proc.info['name'] != exe_name:
                     continue
-
-                try:
-                    exe_path = proc.info['exe'] or ""
-                    exe_path = os.path.normpath(exe_path)
-                    if target_folder not in exe_path:
-                        continue
-
-                    # terminate the process
-                    proc.terminate()
-                    proc.wait(timeout=5)
-                    if proc.is_running():
-                        proc.kill()
-
-                    # reset tracking & update UI
-                    self.server_process = None
-                    self.server_pid = None
-                    self.label_status.setText("Status: Stopped")
-                    self.button_start.setText("Start")
-                    self.button_start.setStyleSheet("background-color: green; color: white;")
-
-                    # turn the tab label red to show it's offline
-                    self.update_tab_color(is_running=False)
-
-                    stopped = True
-                    break
-
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                exe_path = proc.info['exe'] or ""
+                if target not in os.path.normpath(exe_path):
                     continue
-
+    
+                proc.terminate()
+                proc.wait(timeout=5)
+                if proc.is_running():
+                    proc.kill()
+    
+                # Update UI
+                self.server_process = None
+                self.server_pid = None
+                self.label_status.setText("Status: Stopped")
+                self.button_start.setText("Start")
+                self.button_start.setStyleSheet("background-color: green; color: white;")
+                self.update_tab_color(is_running=False)
+    
+                stopped = True
+                break
+    
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Unexpected error while stopping the server: {e}"
-            )
+            QMessageBox.critical(self, "Error", f"Error stopping server: {e}")
             return
-
+    
         if not stopped:
-            # No matching process found
             return
-
-        # 2) CLEAN UP: ensure any WorkerThread is fully stopped
+    
+        # Clean up any WorkerThread
         if hasattr(self, 'worker_thread') and isinstance(self.worker_thread, QThread):
             self.worker_thread.quit()
             self.worker_thread.wait()
-
-        # 3) Kick off the updater (and restart when done, if requested)
+    
+        # Run the shutdown‐time update if requested—but do NOT restart here
         if self.checkbox_perform_update.isChecked():
+            self.upgrade_server(auto_update=True)
+        # else: do nothing more, leave the server stopped
+
+
+
+        
+    def _do_one_restart(self, start_loop=True):
+        """Called on each restart tick."""
+        # 1) (optionally) update before each restart
+        if self.checkbox_restart_update.isChecked():
+            self.upgrade_server(auto_update=True,
+                        on_complete=self.start_server if start_loop else None)
+        else:
+            self.start_server()
+    
+        # 2) If this was our “first” singleShot, kick off the repeating loop
+        if start_loop and hasattr(self, 'restart_timer'):
+            self.restart_timer.start(self.get_restart_interval_ms())
+    
+    def _on_auto_restart_toggled(self, state: int):
+        """
+        Show or hide the 'next restart' label when the Auto Restart? box changes.
+        If the server is already running and we just checked it, update the time.
+        """
+        if state == Qt.Checked:
+            # if server is running, immediately show when the next restart will occur
+            if self.server_process is not None:
+                self._update_next_restart_label()
+        else:
+            # clear it as soon as they uncheck
+            self.label_next_restart.clear()
+    
+
+    def _ms_until(self, qt_time: QTime) -> int:
+        """Milliseconds from now until qt_time (rolls over 24 h)."""
+        now = QTime.currentTime()
+        diff = now.msecsTo(qt_time)
+        return diff if diff > 0 else diff + 24*60*60*1000
+    
+    def get_restart_interval_ms(self) -> int:
+        mapping = {
+            "30 mins": 30*60*1000,
+            "1 hr":    60*60*1000,
+            "2 hrs":   2*60*60*1000,
+            "3 hrs":   3*60*60*1000,
+            "4 hrs":   4*60*60*1000,
+            "5 hrs":   5*60*60*1000,
+            "6 hrs":   6*60*60*1000,
+            "7 hrs":   7*60*60*1000,
+            "8 hrs":   8*60*60*1000,
+            "9 hrs":   9*60*60*1000,
+            "10 hrs":10*60*60*1000,
+            "11 hrs":11*60*60*1000,
+            "12 hrs":12*60*60*1000,
+        }
+        return mapping.get(self.restart_interval_combo.currentText(), 0)
+    
+    def _post_shutdown_start(self):
+        """
+        Called when shutdown (and optional shutdown‐update) is complete.
+        Will perform a per‐restart update if checked, then start the server.
+        """
+        if self.checkbox_restart_update.isChecked():
             self.upgrade_server(
                 auto_update=True,
-                on_complete=lambda: (
-                    self.start_server()
-                    if self.checkbox_then_restart.isChecked()
-                    else None
-                )
+                on_complete=self.start_server
             )
+        else:
+            self.start_server()
 
+    def _maybe_restart_after_update(self):
+        """
+        Called once upgrade_server() completes.
+        If Auto Restart? is checked, schedule the restart.
+        """
+        if self.checkbox_auto_restart.isChecked():
+            QTimer.singleShot(
+                self.get_restart_interval_ms(),
+                self.start_server
+            )
 
     def stop_server(self):
         """Placeholder for stopping the server. If you have a process handle, you can terminate it."""
@@ -1239,71 +1351,91 @@ class ServerTab(QWidget):
    
     def start_server(self):
         """
-        Starts the ARK server using ArkAscendedServer.exe and custom command-line arguments.
-        If the server is already running, this function will stop it instead.
-        Also kicks off version detection & automatic config save 15s after launch.
+        Starts (or stops) the ARK server, then—if Auto Restart? is checked—
+        arms a ONE-SHOT timer that will call _do_auto_restart() after the chosen interval.
         """
-        # If the server is already running, stop it
+        # 1) If already running, stop instead
         if self.server_process is not None:
             self.stop_server()
             return
 
+        # 2) Validate folder
         if not self.server_folder:
             QMessageBox.warning(self, "No Server Folder", "Please import a server first.")
             return
 
-        # Construct the correct path to ArkAscendedServer.exe
+        # 3) Build exe & INI paths, update session name
         exe_file = os.path.join(
             self.server_folder,
             "ShooterGame", "Binaries", "Win64", "ArkAscendedServer.exe"
         )
-
-        # Construct the path to GameUserSettings.ini
         ini_path = os.path.join(
             self.edit_install.text(),
             "ShooterGame", "Saved", "Config", "WindowsServer", "GameUserSettings.ini"
         )
-
-        # Update the session name in the ini file to match the profile name
         update_session_name(ini_path, self.edit_profile.text())
 
         if not os.path.exists(exe_file):
             QMessageBox.critical(self, "Error", f"Server executable not found:\n{exe_file}")
             return
 
-        # Get command-line arguments from the GUI textbox
+        # 4) Launch
         args = self.edit_launch_args.text().strip()
         full_command = f'"{exe_file}" {args}'
-
         try:
-            # Start the server with command-line arguments
             self.server_process = subprocess.Popen(full_command, shell=True)
             self.server_pid = self.server_process.pid
 
-            # Update UI
+            # UI
             self.label_status.setText("Status: Running")
             self.button_start.setText("Stop")
             self.button_start.setStyleSheet("background-color: red; color: white;")
             self.update_tab_color(is_running=True)
 
-            # Add dynamic firewall rules
-            game_user_settings_ini_path = ini_path
+            # Firewall rules if needed
             if self.firewall_status != "Good":
                 add_dynamic_firewall_rules(
                     self,
                     self.edit_profile.text(),
                     self.edit_launch_args.text(),
-                    game_user_settings_ini_path
+                    ini_path
                 )
-            else:
-                print("[Firewall] Skipping firewall rule check — already marked good.")
 
-            # Give ARK a moment to write logs, then detect & save version
+            # Version detection
             QTimer.singleShot(15_000, self.update_ark_version_from_logs)
 
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to start the server: {str(e)}")
+            # 5) Auto-Restart? → schedule ONE SHOT via _do_auto_restart()
+            if self.checkbox_auto_restart.isChecked():
+                # cancel any existing
+                if hasattr(self, 'restart_timer'):
+                    self.restart_timer.stop()
 
+                self.restart_timer = QTimer(self)
+                self.restart_timer.setSingleShot(True)
+                self.restart_timer.timeout.connect(self._do_auto_restart)
+                self.restart_timer.start(self.get_restart_interval_ms())
+
+                # update the display
+                self._update_next_restart_label()
+            else:
+                # clear label & any old timer
+                if hasattr(self, 'restart_timer'):
+                    self.restart_timer.stop()
+                self.label_next_restart.clear()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to start the server: {e}")
+
+    def _update_next_restart_label(self):
+        """
+        Computes now + interval, formats it,
+        and shows “Server will restart at hh:mm AP”
+        """
+        interval_ms = self.get_restart_interval_ms()
+        next_time = QTime.currentTime().addMSecs(interval_ms)
+        self.label_next_restart.setText(
+            f"Server will restart at {next_time.toString('hh:mm AP')}"
+        )
 
     def update_ark_version_from_logs(self):
         """
@@ -1328,6 +1460,25 @@ class ServerTab(QWidget):
             # if version detection fails, log but don't interrupt the UI
             print(f"[Version Detection] Failed to read or save version: {e}")
 
+    def _do_auto_restart(self):
+        """
+        Fired by the one-shot restart_timer.
+        1) Stops the running server (if any).
+        2) Performs per-restart update (if checked).
+        3) Starts the server again (which will re-arm the timer).
+        """
+        # a) ensure any existing instance is stopped
+        if self.server_process is not None:
+            self.stop_server()
+
+        # b) per-restart update?
+        if self.checkbox_restart_update.isChecked():
+            self.upgrade_server(
+                auto_update=True,
+                on_complete=self.start_server
+            )
+        else:
+            self.start_server()
 
     def stop_server(self):
         """
@@ -1449,40 +1600,75 @@ class ServerTab(QWidget):
         Return current server info, including scheduler settings,
         so it can be saved in config.json.
         """
-        # Convert days to a list of booleans
-        day_bools = [cb.isChecked() for cb in self.shutdown_days]
         return {
-            "profile": self.edit_profile.text(),
-            "folder": self.server_folder,
-            "version": self.edit_version.text(),
-            "install": self.edit_install.text(),
-            "steamcmd": self.edit_steamcmd.text(),
-            "launch_args": self.edit_launch_args.text(),
-            "autostart_days": [cb.isChecked() for cb in self.auto_start_days],
-            "autostart_time": self.auto_start_time_edit.time().toString("HH:mm"),
-            "autostart_update": self.checkbox_auto_start_update.isChecked(),
-            "shutdown_days": day_bools,
-            "shutdown_time": self.shutdown_time_edit.time().toString("HH:mm"),
-            "perform_update": self.checkbox_perform_update.isChecked(),
-            "then_restart": self.checkbox_then_restart.isChecked(),
-            "auto_backup_enabled": self.checkbox_enable_backup.isChecked(),
-            "auto_backup_interval": self.backup_interval_combo.currentText(),
-            "auto_backup_dest": self.edit_backup_dest.text(),
-            "backup_limit": self.backup_limit_combo.currentText(),
-            "log_location": self.edit_log_location.text(),
-            "update_log_location": self.edit_update_log_location.text(),
+            "profile":                 self.edit_profile.text(),
+            "folder":                  self.server_folder,
+            "version":                 self.edit_version.text(),
+            "install":                 self.edit_install.text(),
+            "steamcmd":                self.edit_steamcmd.text(),
+            "launch_args":             self.edit_launch_args.text(),
+
+            # Automatic Start
+            "autostart_days":          [cb.isChecked() for cb in self.auto_start_days],
+            "autostart_time":          self.auto_start_time_edit.time().toString("HH:mm"),
+            "autostart_update":        self.checkbox_auto_start_update.isChecked(),
+
+            # Automatic Shutdown
+            "shutdown_days":           [cb.isChecked() for cb in self.shutdown_days],
+            "shutdown_time":           self.shutdown_time_edit.time().toString("HH:mm"),
+            "perform_update":          self.checkbox_perform_update.isChecked(),
+
+            # ** New Auto‐Restart settings **
+            "auto_restart":            self.checkbox_auto_restart.isChecked(),
+            "auto_restart_interval":   self.restart_interval_combo.currentText(),
+            "auto_restart_update":     self.checkbox_restart_update.isChecked(),
+
+            # Backups & logs
+            "auto_backup_enabled":     self.checkbox_enable_backup.isChecked(),
+            "auto_backup_interval":    self.backup_interval_combo.currentText(),
+            "auto_backup_dest":        self.edit_backup_dest.text(),
+            "backup_limit":            self.backup_limit_combo.currentText(),
+            "log_location":            self.edit_log_location.text(),
+            "update_log_location":     self.edit_update_log_location.text(),
         }
+
 
     def set_server_info(self, info):
         """
         Load server info, including scheduler settings, from config.
         """
+        # Basic server settings
         self.edit_profile.setText(info.get("profile", "New Server"))
         self.server_folder = info.get("folder", "")
         self.edit_version.setText(info.get("version", ""))
         self.edit_install.setText(info.get("install", ""))
-        self.edit_steamcmd.setText(info.get("steamcmd", ""))  # <-- Restore SteamCMD path
+        self.edit_steamcmd.setText(info.get("steamcmd", ""))
         self.edit_launch_args.setText(info.get("launch_args", ""))
+
+        # Automatic Start
+        for i, cb in enumerate(self.auto_start_days):
+            cb.setChecked(info.get("autostart_days", [False]*7)[i])
+        h, m = info.get("autostart_time", "09:00").split(":")
+        self.auto_start_time_edit.setTime(QTime(int(h), int(m)))
+        self.checkbox_auto_start_update.setChecked(info.get("autostart_update", False))
+
+        # Automatic Shutdown
+        for i, cb in enumerate(self.shutdown_days):
+            cb.setChecked(info.get("shutdown_days", [False]*7)[i])
+        h, m = info.get("shutdown_time", "08:00").split(":")
+        self.shutdown_time_edit.setTime(QTime(int(h), int(m)))
+        self.checkbox_perform_update.setChecked(info.get("perform_update", False))
+
+        # ** Load Auto‐Restart settings **
+        self.checkbox_auto_restart.setChecked(info.get("auto_restart", False))
+        self.restart_interval_combo.setCurrentText(
+            info.get("auto_restart_interval", "30 mins")
+        )
+        self.checkbox_restart_update.setChecked(info.get("auto_restart_update", False))
+        # Reconnect toggle so the “next restart” label hides/shows correctly
+        self.checkbox_auto_restart.stateChanged.connect(self._on_auto_restart_toggled)
+
+        # Backups & logs
         self.checkbox_enable_backup.setChecked(info.get("auto_backup_enabled", False))
         self.backup_interval_combo.setCurrentText(info.get("auto_backup_interval", "30 mins"))
         self.edit_backup_dest.setText(info.get("auto_backup_dest", ""))
@@ -1490,28 +1676,6 @@ class ServerTab(QWidget):
         self.edit_log_location.setText(info.get("log_location", ""))
         self.edit_update_log_location.setText(info.get("update_log_location", ""))
 
-        # Scheduler
-        day_bools = info.get("shutdown_days", [])
-        for i, cb in enumerate(self.shutdown_days):
-            if i < len(day_bools):
-                cb.setChecked(day_bools[i])
-        shutdown_str = info.get("shutdown_time", "08:00")
-        h, m = shutdown_str.split(":")
-        self.shutdown_time_edit.setTime(QTime(int(h), int(m)))
-        self.checkbox_perform_update.setChecked(info.get("perform_update", False))
-        self.checkbox_then_restart.setChecked(info.get("then_restart", False))
-
-        # Auto Start
-        autostart_bools = info.get("autostart_days", [])
-        for i, cb in enumerate(self.auto_start_days):
-            if i < len(autostart_bools):
-                cb.setChecked(autostart_bools[i])
-        
-        autostart_str = info.get("autostart_time", "08:00")
-        h, m = autostart_str.split(":")
-        self.auto_start_time_edit.setTime(QTime(int(h), int(m)))
-        
-        self.checkbox_auto_start_update.setChecked(info.get("autostart_update", False))
 
 # ---------------------------
 # 3) Main Window with Config + "Save All"
