@@ -11,8 +11,8 @@ import datetime
 import shutil
 import time
 import ctypes
-import time
 import glob
+import shlex
 import re
 import wexpect
 
@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit, QTextEdit
 )
 from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime, QProcess, pyqtSignal, QThread, QObject
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QIcon
 
 # ---------------------------
 # 1) Extra Important Rules
@@ -869,7 +869,7 @@ class ServerTab(QWidget):
         # Allow a 2-minute grace window (e.g., trigger if now is within [scheduled, scheduled+2min])
         if scheduled <= now <= scheduled.addSecs(120):
             if not self.shutdown_triggered_today:
-                self.shutdown_triggered_today = False
+                self.shutdown_triggered_today = True
                 self.perform_scheduled_actions()
         else:
             # Reset trigger if time window has passed
@@ -992,130 +992,149 @@ class ServerTab(QWidget):
                 print(f"[ERROR] Failed to copy log: {e}")
 
     def upgrade_server(self, auto_update=False, on_complete=None):
+
         """
         Runs SteamCMD to install/update ARK server files while logging updates live.
         Ensures administrator privileges, logs output in a structured folder, and delays execution.
         Shows only auto-dismiss messages when auto_update is True.
         """
-    
+
         steamcmd_path = self.edit_steamcmd.text()
         steamcmd_exe = os.path.join(steamcmd_path, "steamcmd.exe")
         if not os.path.exists(steamcmd_exe):
             if not auto_update:
                 QMessageBox.critical(self, "Error", "SteamCMD.exe not found. Please set the correct path.")
             return
-    
+
         server_path = self.edit_install.text()
         if not server_path:
             if not auto_update:
                 QMessageBox.critical(self, "Error", "No installation path set.")
             return
-    
+
         # Set status to "Updating" and update UI immediately.
         self.label_status.setText("Status: Updating")
         QApplication.processEvents()
         time.sleep(3)
-    
+
+        # Prepare log folder and file
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         profile_name = self.edit_profile.text().strip()
         log_base_folder = self.edit_update_log_location.text().strip() or server_path
-        profile_clean = self.edit_profile.text().strip()
+        profile_clean = profile_name.replace("/", "-").replace("\\", "-")
         subfolder_name = profile_name + " Update Logs"
         update_log_folder = os.path.join(log_base_folder, profile_clean, subfolder_name)
         os.makedirs(update_log_folder, exist_ok=True)
-        safe_profile = profile_name.strip().replace("/", "-").replace("\\", "-")
         log_file_path = os.path.join(update_log_folder, f"{profile_name} update log {timestamp}.log")
-    
+        log_file = open(log_file_path, "w", encoding="utf-8")
+
+        # SteamCMD arguments (force_install_dir must come before login)
         arguments = [
-            "+login", "anonymous",
             "+force_install_dir", server_path,
+            "+login", "anonymous",
             "+app_update", "2430930", "validate",
             "+quit"
         ]
-    
-        # if not auto_update:
-          #   self.auto_dismiss_message("Update Running", "The Ark Server Manager is Verifying Server files and will update if needed...", 10)
-    
+
+        # Terminal dialog setup
         terminalDialog = QDialog(self)
-        profile_name = self.edit_profile.text().strip()
-        terminalDialog.setWindowTitle(f"Updating {profile_name} Server")    
+        terminalDialog.setWindowTitle(f"Updating {profile_name} Server")
         terminalDialog.setWindowFlag(Qt.WindowCloseButtonHint, False)
         layout = QVBoxLayout(terminalDialog)
         terminalOutput = QPlainTextEdit(terminalDialog)
         terminalOutput.setReadOnly(True)
         layout.addWidget(terminalOutput)
         terminalDialog.resize(600, 400)
-    
-        log_file = open(log_file_path, "w")
-    
+
+        # Worker to run SteamCMD via wexpect (captures Win32 console output)
         class UpdateWorker(QObject):
-            output = pyqtSignal(str)
+            output   = pyqtSignal(str)
             finished = pyqtSignal()
-            error = pyqtSignal(str)
-    
+            error    = pyqtSignal(str)
+
+            def __init__(self, steamcmd_exe: str, arguments: list, parent=None):
+                super().__init__(parent)
+                self.steamcmd_exe = steamcmd_exe
+                self.arguments    = arguments
+
             def run(self):
                 try:
-                    process = QProcess()
-                    process.setProcessChannelMode(QProcess.MergedChannels)
-                    process.setReadChannel(QProcess.StandardOutput)
-    
-                    def handle_output():
-                        while process.bytesAvailable() > 0:
-                            data = process.readAllStandardOutput().data().decode("utf-8")
-                            if data:
-                                self.output.emit(data)
-    
-                    process.readyRead.connect(handle_output)
-    
-                    def process_done(exitCode, exitStatus):
-                        handle_output()
-                        self.finished.emit()
-    
-                    process.finished.connect(process_done)
-                    process.start(steamcmd_exe, arguments)
-                    process.waitForFinished(-1)
-    
+                    # Build a properly quoted command
+                    cmd_parts = [shlex.quote(self.steamcmd_exe)] + [shlex.quote(arg) for arg in self.arguments]
+                    cmd = " ".join(cmd_parts)
+
+                    # Spawn under winpty to capture all console output, set a small timeout to non-block
+                    child = wexpect.spawn(cmd, timeout=1)
+
+                    # Live read while process is running
+                    while child.isalive():
+                        try:
+                            line = child.readline().rstrip()
+                        except wexpect.TIMEOUT:
+                            continue
+                        except wexpect.EOF:
+                            break
+                        if line:
+                            self.output.emit(line)
+
+                    # Drain any remaining output
+                    try:
+                        remaining = child.read().decode("utf-8", errors="ignore")
+                    except Exception:
+                        remaining = ""
+                    for rem_line in remaining.splitlines():
+                        if rem_line:
+                            self.output.emit(rem_line)
+
+                    # Signal that we’re done
+                    self.finished.emit()
+
                 except Exception as e:
                     self.error.emit(str(e))
-    
-        self.update_thread = QThread(self)  # tied to ServerTab, won't auto-delete
-        self.update_worker = UpdateWorker()
+
+        # Thread and worker setup
+        self.update_thread = QThread(self)
+        self.update_worker = UpdateWorker(steamcmd_exe, arguments)
         self.update_worker.moveToThread(self.update_thread)
         self.update_worker.finished.connect(self.update_thread.quit)
         self.update_worker.finished.connect(self.update_worker.deleteLater)
         self.update_thread.finished.connect(self.update_thread.deleteLater)
-    
+
+        # Output handler writes to both terminal and log
         def update_terminal_output(text):
             terminalOutput.appendPlainText(text)
-            log_file.write(text)
+            log_file.write(text + "\n")
             log_file.flush()
             QApplication.processEvents()
-    
+
+        # On complete: close log, dialog, update UI, notify
         def update_complete():
             log_file.close()
             terminalDialog.accept()
             self.label_status.setText("Status: Stopped")
-            if auto_update:
-                self.auto_dismiss_message("Update Complete", f"Update finished!\nLog saved:\n{log_file_path}", 10)
-            else:
-                self.auto_dismiss_message("Update Complete", f"ARK Server update finished successfully!\nLogs saved at:\n{log_file_path}", 10)
+            msg = f"ARK Server update finished successfully!\nLogs saved at:\n{log_file_path}" if not auto_update else f"Update finished!\nLog saved:\n{log_file_path}"
+            self.auto_dismiss_message("Update Complete", msg, 10)
             if on_complete:
                 on_complete()
-  
+
+        # On error: close log, dialog, show error
         def update_error(err):
             log_file.close()
             terminalDialog.accept()
             QMessageBox.critical(self, "Update Error", err)
             self.label_status.setText("Status: Stopped")
-    
+
+        # Connect signals
         self.update_worker.output.connect(update_terminal_output)
         self.update_worker.finished.connect(update_complete)
         self.update_worker.error.connect(update_error)
-    
+
         self.update_thread.started.connect(self.update_worker.run)
         self.update_thread.start()
+
         terminalDialog.setModal(False)
         terminalDialog.show()
+
 
     def find_real_ark_pid(self):
         """
@@ -1553,7 +1572,7 @@ class ArkServerManager(QMainWindow):
         super().__init__()
         self.setWindowTitle("Ark: Survival Ascended Server Manager")
         self.resize(1200, 700)
-
+        self.setWindowIcon(QIcon(self.resource_path("ark_icon.png")))
         self.config_manager = ConfigManager()
 
         # Light styling
@@ -1722,12 +1741,25 @@ class ArkServerManager(QMainWindow):
             "ARK Server Manager GUI\nVersion 1.0\n\nManage, start, stop, backup, and update your ARK servers with ease.\n\nDeveloped by Dustin Romero"
         )
 
+    def resource_path(self, filename):
+        """
+        Returns the absolute path to a bundled resource, 
+        whether running from source or from a PyInstaller exe.
+        """
+        if hasattr(sys, "_MEIPASS"):
+            return os.path.join(sys._MEIPASS, filename)
+        return os.path.join(os.path.abspath("."), filename)
+
 # ---------------------------
 # Main
 # ---------------------------
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    # this makes the taskbar/Alt-Tab icon use your PNG too:
+    app.setWindowIcon(QIcon("ark_icon.png"))
+
     window = ArkServerManager()
     window.show()
     sys.exit(app.exec_())

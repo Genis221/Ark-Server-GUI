@@ -3,7 +3,7 @@
         {
             "profile": "Khaotix Island",
             "folder": "C:/Users/drome/Desktop/Test Ark server/steamapps/common/ARK Survival Ascended Dedicated Server",
-            "version": "67.24",
+            "version": "67.44",
             "install": "C:/Users/drome/Desktop/Test Ark server/steamapps/common/ARK Survival Ascended Dedicated Server",
             "steamcmd": "C:\\Users\\drome\\Documents\\SteamCMD",
             "launch_args": "TheIsland_WP?listen?Port=7778?QueryPort=27016?OverrideOfficialDifficulty=10.0?bAllowFlyerSpeedLeveling=true -mods=931874,930829,930404,930361,929868,929543,929110,928708,928661,928621,928548,940022,948062,930494,932975,940947,928793,929334,933447,947033,975282,979566,1002596,928818,969021,1008734,1098247,929506,949521 -ForceAllowCaveFlyers -bAllowFlyerSpeedLeveling=true -WinLiveMaxPlayers=25 -clusterID=221221221221 -ClusterDirOverride=\"D:\\\"",
