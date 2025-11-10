@@ -22,8 +22,8 @@ from PyQt5.QtWidgets import (
     QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout, QComboBox, QScrollArea, QFrame, QSizePolicy,
     QPlainTextEdit, QTextEdit
 )
-from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime, QProcess, pyqtSignal, QThread, QObject
-from PyQt5.QtGui import QColor, QIcon
+from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime, QProcess, pyqtSignal, QThread, QObject, QUrl
+from PyQt5.QtGui import QColor, QIcon, QDesktopServices
 
 # ---------------------------
 # 1) Extra Important Rules
@@ -1773,6 +1773,44 @@ class ArkServerManager(QMainWindow):
         info_action = QAction("Ark Server Manager Info", self)
         info_action.triggered.connect(self.show_info_dialog)
         self.toolbar.addAction(info_action)
+
+        # --- Donate (PayPal) button on the far right ---
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.toolbar.addWidget(spacer)
+
+        donate_btn = QPushButton("Donate")
+        # Try to show a PayPal icon if a local 'paypal.png' is available (optional)
+        try:
+            icon_path = self.resource_path("paypal.png")
+            if os.path.exists(icon_path):
+                donate_btn.setIcon(QIcon(icon_path))
+        except Exception:
+            pass
+
+        donate_btn.setToolTip("Support development via PayPal")
+        donate_btn.setCursor(Qt.PointingHandCursor)
+        donate_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FFC439;      /* PayPal yellow */
+                color: #111;                     /* dark text for contrast */
+                font-weight: bold;
+                padding: 6px 12px;
+                border: 1px solid #e0b000;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background-color: #FFB000;
+            }
+            QPushButton:pressed {
+                background-color: #E6A200;
+            }
+        """)
+        donate_btn.clicked.connect(lambda: QDesktopServices.openUrl(
+            QUrl("https://www.paypal.com/donate/?hosted_button_id=5GJEEPTJ6D9TJ")
+        ))
+        self.toolbar.addWidget(donate_btn)
+
 
         # Load tabs from config or create one tab if empty
         self.load_tabs_from_config()
