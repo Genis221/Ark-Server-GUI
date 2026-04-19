@@ -174,4 +174,4 @@ This Server Manager provides:
 	• Full lifecycle server control 
 	• Automation for uptime and maintenance 
 	• Built-in safety systems (firewall, backups) 
-Easy multi-server handling<img width="741" height="4312" alt="image" src="https://github.com/user-attachments/assets/8fece3c6-b1dc-4ff3-aba3-441cf0bc9e3b" />
+
