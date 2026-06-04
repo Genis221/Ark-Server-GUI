@@ -22,8 +22,8 @@ from PyQt5.QtWidgets import (
     QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout, QComboBox, QScrollArea, QFrame, QSizePolicy,
     QPlainTextEdit, QTextEdit
 )
-from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime, QProcess, pyqtSignal, QThread, QObject, QUrl
-from PyQt5.QtGui import QColor, QIcon, QDesktopServices
+from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime, QProcess, pyqtSignal, QThread, QObject
+from PyQt5.QtGui import QColor, QIcon
 
 # ---------------------------
 # 1) Extra Important Rules
@@ -501,11 +501,11 @@ class ServerTab(QWidget):
     
         self.scroll_layout.addWidget(self.auto_start_group)
     
-        # --- Automatic Shutdown / Restart ---
+        # --- Automatic Shutdown ---
         self.scheduler_group = QGroupBox("Automatic Shutdown / Restart")
-        scheduler_layout = QVBoxLayout(self.scheduler_group)
-        
-        # 1) Days of the week
+        scheduler_layout = QVBoxLayout()
+        self.scheduler_group.setLayout(scheduler_layout)
+    
         days_layout = QHBoxLayout()
         self.shutdown_days = []
         for day in ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]:
@@ -513,56 +513,25 @@ class ServerTab(QWidget):
             days_layout.addWidget(cb)
             self.shutdown_days.append(cb)
         scheduler_layout.addLayout(days_layout)
-        
-        # 2) Row 1 — Shutdown time + Perform update
-        shutdown_layout = QHBoxLayout()
-        shutdown_layout.setAlignment(Qt.AlignLeft)
-        shutdown_layout.addWidget(QLabel("Shutdown at:"))
-        
+    
+        time_layout = QHBoxLayout()
+        time_layout.setAlignment(Qt.AlignLeft)  # shift everything left
+        time_layout.addWidget(QLabel("Shutdown at:"))
+    
         self.shutdown_time_edit = QTimeEdit()
         self.shutdown_time_edit.setDisplayFormat("hh:mm AP")
         self.shutdown_time_edit.setTime(QTime(8, 0))
         self.shutdown_time_edit.setFixedWidth(180)
-        shutdown_layout.addWidget(self.shutdown_time_edit)
-        
-        # ← Perform update goes here now
+        time_layout.addWidget(self.shutdown_time_edit)
+    
         self.checkbox_perform_update = QCheckBox("Perform update")
-        shutdown_layout.addWidget(self.checkbox_perform_update)
-        
-        scheduler_layout.addLayout(shutdown_layout)
-        
-        # 3) Row 2 — Auto-Restart + Interval
-        # Row 2 — Auto-restart controls
-        restart_layout = QHBoxLayout()
-        restart_layout.setAlignment(Qt.AlignLeft)
-        
-        # 1) Auto-Restart?
-        self.checkbox_auto_restart = QCheckBox("Auto Restart in")
-        restart_layout.addWidget(self.checkbox_auto_restart)
-        
-        # 2) Interval dropdown
-        self.restart_interval_combo = QComboBox()
-        self.restart_interval_combo.addItems([
-            "30 mins","1 hr","2 hrs","3 hrs","4 hrs",
-            "5 hrs","6 hrs","7 hrs","8 hrs","9 hrs",
-            "10 hrs","11 hrs","12 hrs",
-        ])
-        self.restart_interval_combo.setFixedWidth(120)
-        restart_layout.addWidget(self.restart_interval_combo)
-        
-        # 3) Per-restart update
-        self.checkbox_restart_update = QCheckBox("Perform update every time it restarts")
-        restart_layout.addWidget(self.checkbox_restart_update)
-
-        # 4) Next‐restart time label
-        self.label_next_restart = QLabel("")
-        restart_layout.addWidget(self.label_next_restart)
-        
-        scheduler_layout.addLayout(restart_layout)
-
-        
+        self.checkbox_then_restart = QCheckBox("Then restart")
+        time_layout.addWidget(self.checkbox_perform_update)
+        time_layout.addWidget(self.checkbox_then_restart)
+    
+        scheduler_layout.addLayout(time_layout)
+    
         self.scroll_layout.addWidget(self.scheduler_group)
-
     
         # Row 6: Server Configuration Collapsible Section
         self.config_group = QGroupBox("Server Configuration")
@@ -674,32 +643,7 @@ class ServerTab(QWidget):
         # self.firewall_timer.start(5 * 60 * 1000)  # 5 minutes
         self.verify_firewall_status()
 
-    def get_restart_interval_ms(self) -> int:
-        text = self.restart_interval_combo.currentText()
-        mapping = {
-            "30 mins": 30*60*1000,
-            "1 hr":   60*60*1000,
-            "2 hrs":  2*60*60*1000,
-            "3 hrs":  3*60*60*1000,
-            "4 hrs":  4*60*60*1000,
-            "5 hrs":  5*60*60*1000,
-            "6 hrs":  6*60*60*1000,
-            "7 hrs":  7*60*60*1000,
-            "8 hrs":  8*60*60*1000,
-            "9 hrs":  9*60*60*1000,
-            "10 hrs":10*60*60*1000,
-            "11 hrs":11*60*60*1000,
-            "12 hrs":12*60*60*1000,
-        }
-        return mapping.get(text, 0)
-  
-    def _maybe_restart_after_update(self):
-        # only restart if they ticked Auto Restart?
-        if self.checkbox_auto_restart.isChecked():
-            QTimer.singleShot(
-                self.get_restart_interval_ms(),
-                self.start_server
-            )
+        
         
     def edit_config_file(self, filename):
         """
@@ -934,136 +878,80 @@ class ServerTab(QWidget):
 
     def perform_scheduled_actions(self):
         """
-        1. Stops the ARK server.
-        2. If “Perform update” is checked, runs that.
-        3. NEVER restarts here, even if Auto Restart? is ticked.
+        Executes the scheduled shutdown:
+          1. Finds and terminates the correct ARK server process.
+          2. Optionally updates the server.
+          3. Optionally restarts the server after ensuring it's fully terminated.
         """
         if not self.server_folder:
             return
-    
+
         exe_name = "ArkAscendedServer.exe"
-        target = os.path.normpath(self.server_folder)
+        target_folder = os.path.normpath(self.server_folder)
         stopped = False
-    
-        # Stop the process
+
+        # 1) Locate and stop the server process
         try:
-            for proc in psutil.process_iter(['name','exe']):
+            for proc in psutil.process_iter(['pid', 'name', 'exe']):
                 if proc.info['name'] != exe_name:
                     continue
-                exe_path = proc.info['exe'] or ""
-                if target not in os.path.normpath(exe_path):
+
+                try:
+                    exe_path = proc.info['exe'] or ""
+                    exe_path = os.path.normpath(exe_path)
+                    if target_folder not in exe_path:
+                        continue
+
+                    # terminate the process
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                    if proc.is_running():
+                        proc.kill()
+
+                    # reset tracking & update UI
+                    self.server_process = None
+                    self.server_pid = None
+                    self.label_status.setText("Status: Stopped")
+                    self.button_start.setText("Start")
+                    self.button_start.setStyleSheet("background-color: green; color: white;")
+
+                    # turn the tab label red to show it's offline
+                    self.update_tab_color(is_running=False)
+
+                    stopped = True
+                    break
+
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
-    
-                proc.terminate()
-                proc.wait(timeout=5)
-                if proc.is_running():
-                    proc.kill()
-    
-                # Update UI
-                self.server_process = None
-                self.server_pid = None
-                self.label_status.setText("Status: Stopped")
-                self.button_start.setText("Start")
-                self.button_start.setStyleSheet("background-color: green; color: white;")
-                self.update_tab_color(is_running=False)
-    
-                stopped = True
-                break
-    
+
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error stopping server: {e}")
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Unexpected error while stopping the server: {e}"
+            )
             return
-    
+
         if not stopped:
+            # No matching process found
             return
-    
-        # Clean up any WorkerThread
+
+        # 2) CLEAN UP: ensure any WorkerThread is fully stopped
         if hasattr(self, 'worker_thread') and isinstance(self.worker_thread, QThread):
             self.worker_thread.quit()
             self.worker_thread.wait()
-    
-        # Run the shutdown‐time update if requested—but do NOT restart here
+
+        # 3) Kick off the updater (and restart when done, if requested)
         if self.checkbox_perform_update.isChecked():
-            self.upgrade_server(auto_update=True)
-        # else: do nothing more, leave the server stopped
-
-
-
-        
-    def _do_one_restart(self, start_loop=True):
-        """Called on each restart tick."""
-        # 1) (optionally) update before each restart
-        if self.checkbox_restart_update.isChecked():
-            self.upgrade_server(auto_update=True,
-                        on_complete=self.start_server if start_loop else None)
-        else:
-            self.start_server()
-    
-        # 2) If this was our “first” singleShot, kick off the repeating loop
-        if start_loop and hasattr(self, 'restart_timer'):
-            self.restart_timer.start(self.get_restart_interval_ms())
-    
-    def _on_auto_restart_toggled(self, state: int):
-        """
-        Show or hide the 'next restart' label when the Auto Restart? box changes.
-        If the server is already running and we just checked it, update the time.
-        """
-        if state == Qt.Checked:
-            # if server is running, immediately show when the next restart will occur
-            if self.server_process is not None:
-                self._update_next_restart_label()
-        else:
-            # clear it as soon as they uncheck
-            self.label_next_restart.clear()
-    
-
-    def _ms_until(self, qt_time: QTime) -> int:
-        """Milliseconds from now until qt_time (rolls over 24 h)."""
-        now = QTime.currentTime()
-        diff = now.msecsTo(qt_time)
-        return diff if diff > 0 else diff + 24*60*60*1000
-    
-    def get_restart_interval_ms(self) -> int:
-        mapping = {
-            "30 mins": 30*60*1000,
-            "1 hr":    60*60*1000,
-            "2 hrs":   2*60*60*1000,
-            "3 hrs":   3*60*60*1000,
-            "4 hrs":   4*60*60*1000,
-            "5 hrs":   5*60*60*1000,
-            "6 hrs":   6*60*60*1000,
-            "7 hrs":   7*60*60*1000,
-            "8 hrs":   8*60*60*1000,
-            "9 hrs":   9*60*60*1000,
-            "10 hrs":10*60*60*1000,
-            "11 hrs":11*60*60*1000,
-            "12 hrs":12*60*60*1000,
-        }
-        return mapping.get(self.restart_interval_combo.currentText(), 0)
-    
-    def _post_shutdown_start(self):
-        """
-        Called when shutdown (and optional shutdown‐update) is complete.
-        Will perform a per‐restart update if checked, then start the server.
-        """
-        if self.checkbox_restart_update.isChecked():
             self.upgrade_server(
                 auto_update=True,
-                on_complete=self.start_server
+                on_complete=lambda: (
+                    self.start_server()
+                    if self.checkbox_then_restart.isChecked()
+                    else None
+                )
             )
-        else:
-            self.start_server()
 
-    def _maybe_restart_after_update(self):
-        """
-        Called once upgrade_server() completes.
-        If Auto Restart? is checked, schedule the restart.
-        """
-        if self.checkbox_auto_restart.isChecked():
-            QTimer.singleShot(
-                self.get_restart_interval_ms(),
-                self.start_server
-            )
 
     def stop_server(self):
         """Placeholder for stopping the server. If you have a process handle, you can terminate it."""
@@ -1104,98 +992,148 @@ class ServerTab(QWidget):
                 print(f"[ERROR] Failed to copy log: {e}")
 
     def upgrade_server(self, auto_update=False, on_complete=None):
+
         """
-        Runs SteamCMD to install/update ARK server files.
-        Opens SteamCMD in its own console (live output),
-        uses +log to write that same output to file,
-        and notifies the GUI when it’s done.
+        Runs SteamCMD to install/update ARK server files while logging updates live.
+        Ensures administrator privileges, logs output in a structured folder, and delays execution.
+        Shows only auto-dismiss messages when auto_update is True.
         """
-    
-        # — 1) Resolve steamcmd.exe path —
-        raw = self.edit_steamcmd.text().strip()
-        if raw.lower().endswith('.exe'):
-            steamcmd_exe = raw
-        else:
-            steamcmd_exe = os.path.join(raw, "steamcmd.exe")
-    
-        if not os.path.isfile(steamcmd_exe):
+
+        steamcmd_path = self.edit_steamcmd.text()
+        steamcmd_exe = os.path.join(steamcmd_path, "steamcmd.exe")
+        if not os.path.exists(steamcmd_exe):
             if not auto_update:
-                QMessageBox.critical(self, "Error",
-                    f"SteamCMD.exe not found at:\n{steamcmd_exe}")
+                QMessageBox.critical(self, "Error", "SteamCMD.exe not found. Please set the correct path.")
             return
     
-        # — 2) Validate install path —
-        server_path = self.edit_install.text().strip()
+        server_path = self.edit_install.text()
         if not server_path:
             if not auto_update:
                 QMessageBox.critical(self, "Error", "No installation path set.")
             return
-    
-        # — 3) Update status immediately —
+
+        # Set status to "Updating" and update UI immediately.
         self.label_status.setText("Status: Updating")
         QApplication.processEvents()
-    
-        # — 4) Prepare log file —
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        profile = self.edit_profile.text().strip() or "Default"
-        base    = self.edit_update_log_location.text().strip() or server_path
-        safe    = profile.replace("/", "-").replace("\\", "-")
-        folder  = os.path.join(base, safe, f"{profile} Update Logs")
-        os.makedirs(folder, exist_ok=True)
-        log_path = os.path.join(folder, f"{profile} update log {ts}.log")
-    
-        # — 5) SteamCMD args (note the +log switch at the end) —
+        time.sleep(3)
+
+        # Prepare log folder and file
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        profile_name = self.edit_profile.text().strip()
+        log_base_folder = self.edit_update_log_location.text().strip() or server_path
+        profile_clean = profile_name.replace("/", "-").replace("\\", "-")
+        subfolder_name = profile_name + " Update Logs"
+        update_log_folder = os.path.join(log_base_folder, profile_clean, subfolder_name)
+        os.makedirs(update_log_folder, exist_ok=True)
+        log_file_path = os.path.join(update_log_folder, f"{profile_name} update log {timestamp}.log")
+        log_file = open(log_file_path, "w", encoding="utf-8")
+
+        # SteamCMD arguments (force_install_dir must come before login)
         arguments = [
             "+force_install_dir", server_path,
-            "+login",           "anonymous",
-            "+app_update",      "2430930", "validate",
-            "+log",             log_path,
+            "+login", "anonymous",
+            "+app_update", "2430930", "validate",
             "+quit"
         ]
-    
-        # — 6) Build a single cmd.exe call that:
-        #      • starts a new console window
-        #      • waits for SteamCMD to finish
-        #      • hands off all args unquoted so SteamCMD sees them
-        # 6) Launch SteamCMD in its own console using the Windows flag
-        try:
-            if sys.platform == "win32":
-                CREATE_NEW_CONSOLE = 0x00000010
-                proc = subprocess.Popen(
-                    [steamcmd_exe] + arguments,
-                    creationflags=CREATE_NEW_CONSOLE
-                )
-            else:
-                proc = subprocess.Popen([steamcmd_exe] + arguments)
-        except Exception as e:
-            QMessageBox.critical(self, "Update Error", str(e))
-            self.label_status.setText("Status: Stopped")
-            return
-    
-        # — 7) Watch that process in the background so we don't block the GUI —
-        class _Watcher(QThread):
+
+        # Terminal dialog setup
+        terminalDialog = QDialog(self)
+        terminalDialog.setWindowTitle(f"Updating {profile_name} Server")
+        terminalDialog.setWindowFlag(Qt.WindowCloseButtonHint, False)
+        layout = QVBoxLayout(terminalDialog)
+        terminalOutput = QPlainTextEdit(terminalDialog)
+        terminalOutput.setReadOnly(True)
+        layout.addWidget(terminalOutput)
+        terminalDialog.resize(600, 400)
+
+        # Worker to run SteamCMD via wexpect (captures Win32 console output)
+        class UpdateWorker(QObject):
+            output   = pyqtSignal(str)
             finished = pyqtSignal()
-            def __init__(self, p, parent=None):
+            error    = pyqtSignal(str)
+
+            def __init__(self, steamcmd_exe: str, arguments: list, parent=None):
                 super().__init__(parent)
-                self.p = p
+                self.steamcmd_exe = steamcmd_exe
+                self.arguments    = arguments
+
             def run(self):
-                self.p.wait()
-                self.finished.emit()
-    
-        watcher = _Watcher(proc, parent=self)
-        def _on_done():
+                try:
+                    # Build a properly quoted command
+                    cmd_parts = [shlex.quote(self.steamcmd_exe)] + [shlex.quote(arg) for arg in self.arguments]
+                    cmd = " ".join(cmd_parts)
+
+                    # Spawn under winpty to capture all console output, set a small timeout to non-block
+                    child = wexpect.spawn(cmd, timeout=1)
+
+                    # Live read while process is running
+                    while child.isalive():
+                        try:
+                            line = child.readline().rstrip()
+                        except wexpect.TIMEOUT:
+                            continue
+                        except wexpect.EOF:
+                            break
+                        if line:
+                            self.output.emit(line)
+
+                    # Drain any remaining output
+                    try:
+                        remaining = child.read().decode("utf-8", errors="ignore")
+                    except Exception:
+                        remaining = ""
+                    for rem_line in remaining.splitlines():
+                        if rem_line:
+                            self.output.emit(rem_line)
+
+                    # Signal that we’re done
+                    self.finished.emit()
+
+                except Exception as e:
+                    self.error.emit(str(e))
+
+        # Thread and worker setup
+        self.update_thread = QThread(self)
+        self.update_worker = UpdateWorker(steamcmd_exe, arguments)
+        self.update_worker.moveToThread(self.update_thread)
+        self.update_worker.finished.connect(self.update_thread.quit)
+        self.update_worker.finished.connect(self.update_worker.deleteLater)
+        self.update_thread.finished.connect(self.update_thread.deleteLater)
+
+        # Output handler writes to both terminal and log
+        def update_terminal_output(text):
+            terminalOutput.appendPlainText(text)
+            log_file.write(text + "\n")
+            log_file.flush()
+            QApplication.processEvents()
+
+        # On complete: close log, dialog, update UI, notify
+        def update_complete():
+            log_file.close()
+            terminalDialog.accept()
             self.label_status.setText("Status: Stopped")
-            title = "Update Complete"
-            msg = (
-                f"ARK Server update finished successfully!\nLogs saved at:\n{log_path}"
-                if not auto_update
-                else f"Update finished!\nLog saved:\n{log_path}"
-            )
-            self.auto_dismiss_message(title, msg, 10)
+            msg = f"ARK Server update finished successfully!\nLogs saved at:\n{log_file_path}" if not auto_update else f"Update finished!\nLog saved:\n{log_file_path}"
+            self.auto_dismiss_message("Update Complete", msg, 10)
             if on_complete:
                 on_complete()
-        watcher.finished.connect(_on_done)
-        watcher.start()
+
+        # On error: close log, dialog, show error
+        def update_error(err):
+            log_file.close()
+            terminalDialog.accept()
+            QMessageBox.critical(self, "Update Error", err)
+            self.label_status.setText("Status: Stopped")
+
+        # Connect signals
+        self.update_worker.output.connect(update_terminal_output)
+        self.update_worker.finished.connect(update_complete)
+        self.update_worker.error.connect(update_error)
+
+        self.update_thread.started.connect(self.update_worker.run)
+        self.update_thread.start()
+
+        terminalDialog.setModal(False)
+        terminalDialog.show()
 
 
     def find_real_ark_pid(self):
@@ -1351,91 +1289,71 @@ class ServerTab(QWidget):
    
     def start_server(self):
         """
-        Starts (or stops) the ARK server, then—if Auto Restart? is checked—
-        arms a ONE-SHOT timer that will call _do_auto_restart() after the chosen interval.
+        Starts the ARK server using ArkAscendedServer.exe and custom command-line arguments.
+        If the server is already running, this function will stop it instead.
+        Also kicks off version detection & automatic config save 15s after launch.
         """
-        # 1) If already running, stop instead
+        # If the server is already running, stop it
         if self.server_process is not None:
             self.stop_server()
             return
 
-        # 2) Validate folder
         if not self.server_folder:
             QMessageBox.warning(self, "No Server Folder", "Please import a server first.")
             return
 
-        # 3) Build exe & INI paths, update session name
+        # Construct the correct path to ArkAscendedServer.exe
         exe_file = os.path.join(
             self.server_folder,
             "ShooterGame", "Binaries", "Win64", "ArkAscendedServer.exe"
         )
+
+        # Construct the path to GameUserSettings.ini
         ini_path = os.path.join(
             self.edit_install.text(),
             "ShooterGame", "Saved", "Config", "WindowsServer", "GameUserSettings.ini"
         )
+
+        # Update the session name in the ini file to match the profile name
         update_session_name(ini_path, self.edit_profile.text())
 
         if not os.path.exists(exe_file):
             QMessageBox.critical(self, "Error", f"Server executable not found:\n{exe_file}")
             return
 
-        # 4) Launch
+        # Get command-line arguments from the GUI textbox
         args = self.edit_launch_args.text().strip()
         full_command = f'"{exe_file}" {args}'
+
         try:
+            # Start the server with command-line arguments
             self.server_process = subprocess.Popen(full_command, shell=True)
             self.server_pid = self.server_process.pid
 
-            # UI
+            # Update UI
             self.label_status.setText("Status: Running")
             self.button_start.setText("Stop")
             self.button_start.setStyleSheet("background-color: red; color: white;")
             self.update_tab_color(is_running=True)
 
-            # Firewall rules if needed
+            # Add dynamic firewall rules
+            game_user_settings_ini_path = ini_path
             if self.firewall_status != "Good":
                 add_dynamic_firewall_rules(
                     self,
                     self.edit_profile.text(),
                     self.edit_launch_args.text(),
-                    ini_path
+                    game_user_settings_ini_path
                 )
+            else:
+                print("[Firewall] Skipping firewall rule check — already marked good.")
 
-            # Version detection
+            # Give ARK a moment to write logs, then detect & save version
             QTimer.singleShot(15_000, self.update_ark_version_from_logs)
 
-            # 5) Auto-Restart? → schedule ONE SHOT via _do_auto_restart()
-            if self.checkbox_auto_restart.isChecked():
-                # cancel any existing
-                if hasattr(self, 'restart_timer'):
-                    self.restart_timer.stop()
-
-                self.restart_timer = QTimer(self)
-                self.restart_timer.setSingleShot(True)
-                self.restart_timer.timeout.connect(self._do_auto_restart)
-                self.restart_timer.start(self.get_restart_interval_ms())
-
-                # update the display
-                self._update_next_restart_label()
-            else:
-                # clear label & any old timer
-                if hasattr(self, 'restart_timer'):
-                    self.restart_timer.stop()
-                self.label_next_restart.clear()
-
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to start the server: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to start the server: {str(e)}")
 
-    def _update_next_restart_label(self):
-        """
-        Computes now + interval, formats it,
-        and shows “Server will restart at hh:mm AP”
-        """
-        interval_ms = self.get_restart_interval_ms()
-        next_time = QTime.currentTime().addMSecs(interval_ms)
-        self.label_next_restart.setText(
-            f"Server will restart at {next_time.toString('hh:mm AP')}"
-        )
 
     def update_ark_version_from_logs(self):
         """
@@ -1460,25 +1378,6 @@ class ServerTab(QWidget):
             # if version detection fails, log but don't interrupt the UI
             print(f"[Version Detection] Failed to read or save version: {e}")
 
-    def _do_auto_restart(self):
-        """
-        Fired by the one-shot restart_timer.
-        1) Stops the running server (if any).
-        2) Performs per-restart update (if checked).
-        3) Starts the server again (which will re-arm the timer).
-        """
-        # a) ensure any existing instance is stopped
-        if self.server_process is not None:
-            self.stop_server()
-
-        # b) per-restart update?
-        if self.checkbox_restart_update.isChecked():
-            self.upgrade_server(
-                auto_update=True,
-                on_complete=self.start_server
-            )
-        else:
-            self.start_server()
 
     def stop_server(self):
         """
@@ -1600,75 +1499,40 @@ class ServerTab(QWidget):
         Return current server info, including scheduler settings,
         so it can be saved in config.json.
         """
+        # Convert days to a list of booleans
+        day_bools = [cb.isChecked() for cb in self.shutdown_days]
         return {
-            "profile":                 self.edit_profile.text(),
-            "folder":                  self.server_folder,
-            "version":                 self.edit_version.text(),
-            "install":                 self.edit_install.text(),
-            "steamcmd":                self.edit_steamcmd.text(),
-            "launch_args":             self.edit_launch_args.text(),
-
-            # Automatic Start
-            "autostart_days":          [cb.isChecked() for cb in self.auto_start_days],
-            "autostart_time":          self.auto_start_time_edit.time().toString("HH:mm"),
-            "autostart_update":        self.checkbox_auto_start_update.isChecked(),
-
-            # Automatic Shutdown
-            "shutdown_days":           [cb.isChecked() for cb in self.shutdown_days],
-            "shutdown_time":           self.shutdown_time_edit.time().toString("HH:mm"),
-            "perform_update":          self.checkbox_perform_update.isChecked(),
-
-            # ** New Auto‐Restart settings **
-            "auto_restart":            self.checkbox_auto_restart.isChecked(),
-            "auto_restart_interval":   self.restart_interval_combo.currentText(),
-            "auto_restart_update":     self.checkbox_restart_update.isChecked(),
-
-            # Backups & logs
-            "auto_backup_enabled":     self.checkbox_enable_backup.isChecked(),
-            "auto_backup_interval":    self.backup_interval_combo.currentText(),
-            "auto_backup_dest":        self.edit_backup_dest.text(),
-            "backup_limit":            self.backup_limit_combo.currentText(),
-            "log_location":            self.edit_log_location.text(),
-            "update_log_location":     self.edit_update_log_location.text(),
+            "profile": self.edit_profile.text(),
+            "folder": self.server_folder,
+            "version": self.edit_version.text(),
+            "install": self.edit_install.text(),
+            "steamcmd": self.edit_steamcmd.text(),
+            "launch_args": self.edit_launch_args.text(),
+            "autostart_days": [cb.isChecked() for cb in self.auto_start_days],
+            "autostart_time": self.auto_start_time_edit.time().toString("HH:mm"),
+            "autostart_update": self.checkbox_auto_start_update.isChecked(),
+            "shutdown_days": day_bools,
+            "shutdown_time": self.shutdown_time_edit.time().toString("HH:mm"),
+            "perform_update": self.checkbox_perform_update.isChecked(),
+            "then_restart": self.checkbox_then_restart.isChecked(),
+            "auto_backup_enabled": self.checkbox_enable_backup.isChecked(),
+            "auto_backup_interval": self.backup_interval_combo.currentText(),
+            "auto_backup_dest": self.edit_backup_dest.text(),
+            "backup_limit": self.backup_limit_combo.currentText(),
+            "log_location": self.edit_log_location.text(),
+            "update_log_location": self.edit_update_log_location.text(),
         }
-
 
     def set_server_info(self, info):
         """
         Load server info, including scheduler settings, from config.
         """
-        # Basic server settings
         self.edit_profile.setText(info.get("profile", "New Server"))
         self.server_folder = info.get("folder", "")
         self.edit_version.setText(info.get("version", ""))
         self.edit_install.setText(info.get("install", ""))
-        self.edit_steamcmd.setText(info.get("steamcmd", ""))
+        self.edit_steamcmd.setText(info.get("steamcmd", ""))  # <-- Restore SteamCMD path
         self.edit_launch_args.setText(info.get("launch_args", ""))
-
-        # Automatic Start
-        for i, cb in enumerate(self.auto_start_days):
-            cb.setChecked(info.get("autostart_days", [False]*7)[i])
-        h, m = info.get("autostart_time", "09:00").split(":")
-        self.auto_start_time_edit.setTime(QTime(int(h), int(m)))
-        self.checkbox_auto_start_update.setChecked(info.get("autostart_update", False))
-
-        # Automatic Shutdown
-        for i, cb in enumerate(self.shutdown_days):
-            cb.setChecked(info.get("shutdown_days", [False]*7)[i])
-        h, m = info.get("shutdown_time", "08:00").split(":")
-        self.shutdown_time_edit.setTime(QTime(int(h), int(m)))
-        self.checkbox_perform_update.setChecked(info.get("perform_update", False))
-
-        # ** Load Auto‐Restart settings **
-        self.checkbox_auto_restart.setChecked(info.get("auto_restart", False))
-        self.restart_interval_combo.setCurrentText(
-            info.get("auto_restart_interval", "30 mins")
-        )
-        self.checkbox_restart_update.setChecked(info.get("auto_restart_update", False))
-        # Reconnect toggle so the “next restart” label hides/shows correctly
-        self.checkbox_auto_restart.stateChanged.connect(self._on_auto_restart_toggled)
-
-        # Backups & logs
         self.checkbox_enable_backup.setChecked(info.get("auto_backup_enabled", False))
         self.backup_interval_combo.setCurrentText(info.get("auto_backup_interval", "30 mins"))
         self.edit_backup_dest.setText(info.get("auto_backup_dest", ""))
@@ -1676,9 +1540,31 @@ class ServerTab(QWidget):
         self.edit_log_location.setText(info.get("log_location", ""))
         self.edit_update_log_location.setText(info.get("update_log_location", ""))
 
+        # Scheduler
+        day_bools = info.get("shutdown_days", [])
+        for i, cb in enumerate(self.shutdown_days):
+            if i < len(day_bools):
+                cb.setChecked(day_bools[i])
+        shutdown_str = info.get("shutdown_time", "08:00")
+        h, m = shutdown_str.split(":")
+        self.shutdown_time_edit.setTime(QTime(int(h), int(m)))
+        self.checkbox_perform_update.setChecked(info.get("perform_update", False))
+        self.checkbox_then_restart.setChecked(info.get("then_restart", False))
+
+        # Auto Start
+        autostart_bools = info.get("autostart_days", [])
+        for i, cb in enumerate(self.auto_start_days):
+            if i < len(autostart_bools):
+                cb.setChecked(autostart_bools[i])
+        
+        autostart_str = info.get("autostart_time", "08:00")
+        h, m = autostart_str.split(":")
+        self.auto_start_time_edit.setTime(QTime(int(h), int(m)))
+        
+        self.checkbox_auto_start_update.setChecked(info.get("autostart_update", False))
 
 # ---------------------------
-# 3) Main Window with Config + "Save All"
+# 3) Main Window with Config + Auto-Save
 # ---------------------------
 
 class ArkServerManager(QMainWindow):
@@ -1688,6 +1574,15 @@ class ArkServerManager(QMainWindow):
         self.resize(1200, 700)
         self.setWindowIcon(QIcon(self.resource_path("ark_icon.png")))
         self.config_manager = ConfigManager()
+
+        # Auto-save support. Changes are debounced so typing does not write config.json
+        # on every single keystroke. A final save also happens when the app closes.
+        self._loading_tabs = False
+        self._autosave_enabled = True
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(750)
+        self._autosave_timer.timeout.connect(lambda: self.save_all_tabs(silent=True))
 
         # Light styling
         self.setStyleSheet("""
@@ -1763,81 +1658,91 @@ class ArkServerManager(QMainWindow):
         self.plus_button.clicked.connect(self.add_new_tab)
         self.tabs.setCornerWidget(self.plus_button, Qt.TopRightCorner)
 
-        # Toolbar: "Save All"
+        # Toolbar: settings are saved automatically, so there is no manual Save Config button.
         self.toolbar = self.addToolBar("Main Toolbar")
-        save_action = QAction("Save Config", self)
-        save_action.triggered.connect(self.save_all_tabs)
-        self.toolbar.addAction(save_action)
 
-        # ✅ NEW: Info Action
+        # ✅ Info Action
         info_action = QAction("Ark Server Manager Info", self)
         info_action.triggered.connect(self.show_info_dialog)
         self.toolbar.addAction(info_action)
 
-        # --- Donate (PayPal) button on the far right ---
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.toolbar.addWidget(spacer)
-
-        donate_btn = QPushButton("Donate")
-        # Try to show a PayPal icon if a local 'paypal.png' is available (optional)
-        try:
-            icon_path = self.resource_path("paypal.png")
-            if os.path.exists(icon_path):
-                donate_btn.setIcon(QIcon(icon_path))
-        except Exception:
-            pass
-
-        donate_btn.setToolTip("Support development via PayPal")
-        donate_btn.setCursor(Qt.PointingHandCursor)
-        donate_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #FFC439;      /* PayPal yellow */
-                color: #111;                     /* dark text for contrast */
-                font-weight: bold;
-                padding: 6px 12px;
-                border: 1px solid #e0b000;
-                border-radius: 6px;
-            }
-            QPushButton:hover {
-                background-color: #FFB000;
-            }
-            QPushButton:pressed {
-                background-color: #E6A200;
-            }
-        """)
-        donate_btn.clicked.connect(lambda: QDesktopServices.openUrl(
-            QUrl("https://www.paypal.com/donate/?hosted_button_id=5GJEEPTJ6D9TJ")
-        ))
-        self.toolbar.addWidget(donate_btn)
-
+        # ✅ Copy settings from one server profile to another
+        copy_settings_action = QAction("Copy Server Settings", self)
+        copy_settings_action.triggered.connect(self.show_copy_settings_dialog)
+        self.toolbar.addAction(copy_settings_action)
 
         # Load tabs from config or create one tab if empty
         self.load_tabs_from_config()
 
     def load_tabs_from_config(self):
-        servers = self.config_manager.data.get("servers", [])
-        if servers:
-            for info in servers:
-                new_tab = ServerTab()
-                new_tab.set_server_info(info)
-                index = self.tabs.addTab(new_tab, f"  {info.get('profile', 'New Server')}  ")
-                new_tab.update_tab_color(is_running=False)
-                new_tab.edit_profile.textChanged.connect(
-                    lambda _, tab=new_tab: self.sync_tab_name(tab)
-                )
-            self.tabs.setCurrentIndex(0)
-        else:
-            self.add_new_tab()
+        self._loading_tabs = True
+        try:
+            servers = self.config_manager.data.get("servers", [])
+            if servers:
+                for info in servers:
+                    new_tab = ServerTab()
+                    new_tab.set_server_info(info)
+                    index = self.tabs.addTab(new_tab, f"  {info.get('profile', 'New Server')}  ")
+                    new_tab.update_tab_color(is_running=False)
+                    self.connect_tab_autosave(new_tab)
+                    new_tab.edit_profile.textChanged.connect(
+                        lambda _, tab=new_tab: self.sync_tab_name(tab)
+                    )
+                self.tabs.setCurrentIndex(0)
+            else:
+                self.add_new_tab()
+        finally:
+            self._loading_tabs = False
+
+
+    def connect_tab_autosave(self, tab):
+        """Connects all user-editable server settings to the debounced auto-save timer."""
+        line_edits = [
+            tab.edit_profile,
+            tab.edit_steamcmd,
+            tab.edit_launch_args,
+            tab.edit_install,
+            tab.edit_backup_dest,
+            tab.edit_log_location,
+            tab.edit_update_log_location,
+        ]
+        for widget in line_edits:
+            widget.textChanged.connect(self.schedule_autosave)
+
+        checkboxes = (
+            tab.auto_start_days
+            + tab.shutdown_days
+            + [
+                tab.checkbox_auto_start_update,
+                tab.checkbox_perform_update,
+                tab.checkbox_then_restart,
+                tab.checkbox_enable_backup,
+            ]
+        )
+        for checkbox in checkboxes:
+            checkbox.toggled.connect(self.schedule_autosave)
+
+        tab.auto_start_time_edit.timeChanged.connect(self.schedule_autosave)
+        tab.shutdown_time_edit.timeChanged.connect(self.schedule_autosave)
+        tab.backup_interval_combo.currentTextChanged.connect(self.schedule_autosave)
+        tab.backup_limit_combo.currentTextChanged.connect(self.schedule_autosave)
+
+    def schedule_autosave(self, *args):
+        """Schedules a quiet config save shortly after the latest GUI change."""
+        if self._loading_tabs or not self._autosave_enabled:
+            return
+        self._autosave_timer.start()
 
     def add_new_tab(self):
         new_tab = ServerTab()
         index = self.tabs.addTab(new_tab, "New Server")
         new_tab.update_tab_color(is_running=False)
         self.tabs.setCurrentIndex(index)
+        self.connect_tab_autosave(new_tab)
         new_tab.edit_profile.textChanged.connect(
             lambda _, tab=new_tab: self.sync_tab_name(tab)
         )
+        self.schedule_autosave()
 
     def sync_tab_name(self, tab):
         i = self.tabs.indexOf(tab)
@@ -1848,6 +1753,10 @@ class ArkServerManager(QMainWindow):
             self.tabs.setTabText(i, text_with_spaces)
 
     def closeEvent(self, event):
+        # Final quiet save when closing, so the last edit is captured even if the
+        # debounce timer has not fired yet.
+        self.save_all_tabs(silent=True)
+
         # if an update thread is still alive, stop it cleanly
         if hasattr(self, 'update_thread') and self.update_thread.isRunning():
             self.update_thread.quit()
@@ -1875,16 +1784,225 @@ class ArkServerManager(QMainWindow):
         if widget:
             widget.deleteLater()
         self.tabs.removeTab(index)
+        self.schedule_autosave()
 
 
-    def save_all_tabs(self):
+    def show_copy_settings_dialog(self):
+        """
+        Opens a small top-level dialog that lets the user copy selected settings
+        from one server tab/profile to another.
+        """
+        if self.tabs.count() < 2:
+            QMessageBox.warning(self, "Copy Settings", "You need at least two server profiles/tabs to copy settings.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Copy Server Settings")
+        dialog.resize(460, 360)
+
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Copy selected settings from one server profile to another:"))
+
+        source_combo = QComboBox(dialog)
+        target_combo = QComboBox(dialog)
+
+        for i in range(self.tabs.count()):
+            tab = self.tabs.widget(i)
+            profile_name = tab.edit_profile.text().strip() or f"Server {i + 1}"
+            source_combo.addItem(profile_name, i)
+            target_combo.addItem(profile_name, i)
+
+        if self.tabs.count() > 1:
+            target_combo.setCurrentIndex(1)
+
+        layout.addWidget(QLabel("Copy FROM:"))
+        layout.addWidget(source_combo)
+        layout.addWidget(QLabel("Copy TO:"))
+        layout.addWidget(target_combo)
+
+        cb_launch_args = QCheckBox("Launch Arguments")
+        cb_auto_start = QCheckBox("Automatic Start")
+        cb_shutdown = QCheckBox("Automatic Shutdown / Restart")
+        cb_backup = QCheckBox("Automatic World Save Backup")
+        cb_logs = QCheckBox("Game and Update Log Locations")
+        cb_config_files = QCheckBox("Server Config Files: Game.ini + GameUserSettings.ini")
+
+        for cb in [cb_launch_args, cb_auto_start, cb_shutdown, cb_backup, cb_logs, cb_config_files]:
+            cb.setChecked(True)
+            layout.addWidget(cb)
+
+        button_row = QHBoxLayout()
+        copy_button = QPushButton("Copy Settings")
+        cancel_button = QPushButton("Cancel")
+        button_row.addWidget(copy_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+
+        cancel_button.clicked.connect(dialog.reject)
+
+        def do_copy():
+            source_index = source_combo.currentData()
+            target_index = target_combo.currentData()
+
+            options = {
+                "launch_args": cb_launch_args.isChecked(),
+                "auto_start": cb_auto_start.isChecked(),
+                "shutdown": cb_shutdown.isChecked(),
+                "backup": cb_backup.isChecked(),
+                "logs": cb_logs.isChecked(),
+                "config_files": cb_config_files.isChecked(),
+            }
+
+            self.copy_server_settings(source_index, target_index, options)
+            dialog.accept()
+
+        copy_button.clicked.connect(do_copy)
+        dialog.exec_()
+
+    def copy_server_settings(self, source_index, target_index, options):
+        """
+        Copies selected settings from one ServerTab to another ServerTab.
+        This intentionally does NOT copy profile name, install folder, server folder,
+        installed version, or SteamCMD path unless you add those keys later.
+        """
+        if source_index == target_index:
+            QMessageBox.warning(self, "Copy Settings", "Source and target server profiles must be different.")
+            return
+
+        source_tab = self.tabs.widget(source_index)
+        target_tab = self.tabs.widget(target_index)
+
+        if source_tab is None or target_tab is None:
+            QMessageBox.warning(self, "Copy Settings", "Could not find the selected source or target server tab.")
+            return
+
+        source_name = source_tab.edit_profile.text().strip() or "Source Server"
+        target_name = target_tab.edit_profile.text().strip() or "Target Server"
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Copy Settings",
+            f"Copy selected settings from '{source_name}' to '{target_name}'?\n\n"
+            "This will overwrite the selected target settings. Existing target Game.ini/GameUserSettings.ini files will be backed up first if config-file copying is selected.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        copied_sections = []
+
+        if options.get("launch_args"):
+            target_tab.edit_launch_args.setText(source_tab.edit_launch_args.text())
+            copied_sections.append("Launch Arguments")
+
+        if options.get("auto_start"):
+            for src_cb, dst_cb in zip(source_tab.auto_start_days, target_tab.auto_start_days):
+                dst_cb.setChecked(src_cb.isChecked())
+            target_tab.auto_start_time_edit.setTime(source_tab.auto_start_time_edit.time())
+            target_tab.checkbox_auto_start_update.setChecked(source_tab.checkbox_auto_start_update.isChecked())
+            copied_sections.append("Automatic Start")
+
+        if options.get("shutdown"):
+            for src_cb, dst_cb in zip(source_tab.shutdown_days, target_tab.shutdown_days):
+                dst_cb.setChecked(src_cb.isChecked())
+            target_tab.shutdown_time_edit.setTime(source_tab.shutdown_time_edit.time())
+            target_tab.checkbox_perform_update.setChecked(source_tab.checkbox_perform_update.isChecked())
+            target_tab.checkbox_then_restart.setChecked(source_tab.checkbox_then_restart.isChecked())
+            copied_sections.append("Automatic Shutdown / Restart")
+
+        if options.get("backup"):
+            target_tab.checkbox_enable_backup.setChecked(source_tab.checkbox_enable_backup.isChecked())
+            target_tab.backup_interval_combo.setCurrentText(source_tab.backup_interval_combo.currentText())
+            target_tab.edit_backup_dest.setText(source_tab.edit_backup_dest.text())
+            target_tab.backup_limit_combo.setCurrentText(source_tab.backup_limit_combo.currentText())
+            copied_sections.append("Automatic World Save Backup")
+
+        if options.get("logs"):
+            target_tab.edit_log_location.setText(source_tab.edit_log_location.text())
+            target_tab.edit_update_log_location.setText(source_tab.edit_update_log_location.text())
+            copied_sections.append("Game and Update Log Locations")
+
+        config_result_message = ""
+        if options.get("config_files"):
+            copied, skipped, errors = self.copy_server_config_files(source_tab, target_tab)
+            if copied:
+                copied_sections.append("Server Config Files")
+            config_result_message = (
+                f"\n\nConfig files copied: {len(copied)}"
+                f"\nConfig files skipped: {len(skipped)}"
+                f"\nConfig file errors: {len(errors)}"
+            )
+            if errors:
+                config_result_message += "\n\nErrors:\n" + "\n".join(errors[:5])
+                if len(errors) > 5:
+                    config_result_message += f"\n...and {len(errors) - 5} more."
+
+        self.save_all_tabs(silent=True)
+
+        QMessageBox.information(
+            self,
+            "Copy Complete",
+            f"Copied from '{source_name}' to '{target_name}':\n- "
+            + "\n- ".join(copied_sections if copied_sections else ["No sections selected"])
+            + config_result_message
+        )
+
+    def copy_server_config_files(self, source_tab, target_tab):
+        """
+        Copies Game.ini and GameUserSettings.ini from the source server install folder
+        to the target server install folder. Existing target files are backed up first.
+        """
+        copied = []
+        skipped = []
+        errors = []
+
+        source_install = source_tab.edit_install.text().strip()
+        target_install = target_tab.edit_install.text().strip()
+
+        if not source_install:
+            errors.append("Source server install location is blank.")
+            return copied, skipped, errors
+
+        if not target_install:
+            errors.append("Target server install location is blank.")
+            return copied, skipped, errors
+
+        config_rel_folder = os.path.join("ShooterGame", "Saved", "Config", "WindowsServer")
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        for filename in ["Game.ini", "GameUserSettings.ini"]:
+            src = os.path.join(source_install, config_rel_folder, filename)
+            dst = os.path.join(target_install, config_rel_folder, filename)
+
+            if not os.path.exists(src):
+                skipped.append(filename)
+                continue
+
+            try:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+
+                if os.path.exists(dst):
+                    backup_path = dst + f".backup_{timestamp}"
+                    shutil.copy2(dst, backup_path)
+
+                shutil.copy2(src, dst)
+                copied.append(filename)
+
+            except Exception as e:
+                errors.append(f"{filename}: {e}")
+
+        return copied, skipped, errors
+
+    def save_all_tabs(self, silent=False):
         servers = []
         for i in range(self.tabs.count()):
             tab = self.tabs.widget(i)
             servers.append(tab.get_server_info())
         self.config_manager.data["servers"] = servers
         self.config_manager.save_config()
-        QMessageBox.information(self, "Saved", "All server information saved to config.")
+        if not silent:
+            QMessageBox.information(self, "Saved", "All server information saved to config.")
 
     def show_info_dialog(self):
         QMessageBox.information(
