@@ -434,7 +434,7 @@ class ServerTab(QWidget):
         self.label_firewall = QLabel("Firewall Status: Not Checked")
         self.label_availability = QLabel("Availability: Offline")
         self.label_players = QLabel("Players: 0 / 25")
-        self.button_upgrade = QPushButton("Update / Verify")
+        self.button_upgrade = QPushButton("Install / Update / Verify")
     
         status_layout = QVBoxLayout()
         status_layout.addWidget(self.label_status)
@@ -992,148 +992,152 @@ class ServerTab(QWidget):
                 print(f"[ERROR] Failed to copy log: {e}")
 
     def upgrade_server(self, auto_update=False, on_complete=None):
-
         """
-        Runs SteamCMD to install/update ARK server files while logging updates live.
-        Ensures administrator privileges, logs output in a structured folder, and delays execution.
-        Shows only auto-dismiss messages when auto_update is True.
+        Runs SteamCMD in a real Windows CMD window instead of the GUI terminal.
         """
-
-        steamcmd_path = self.edit_steamcmd.text()
+        import tempfile
+    
+        steamcmd_path = self.edit_steamcmd.text().strip()
         steamcmd_exe = os.path.join(steamcmd_path, "steamcmd.exe")
-        if not os.path.exists(steamcmd_exe):
+    
+        if not steamcmd_path or not os.path.exists(steamcmd_exe):
             if not auto_update:
-                QMessageBox.critical(self, "Error", "SteamCMD.exe not found. Please set the correct path.")
+                reply = QMessageBox.question(
+                    self,
+                    "SteamCMD Missing",
+                    "SteamCMD.exe was not found. Would you like to download SteamCMD now?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                if reply == QMessageBox.Yes:
+                    self.download_steamcmd()
             return
     
-        server_path = self.edit_install.text()
+        server_path = self.edit_install.text().strip()
         if not server_path:
             if not auto_update:
-                QMessageBox.critical(self, "Error", "No installation path set.")
-            return
-
-        # Set status to "Updating" and update UI immediately.
+                folder = QFileDialog.getExistingDirectory(self, "Select Where To Install ARK Server")
+                if not folder:
+                    return
+                server_path = folder
+                self.edit_install.setText(folder)
+                self.server_folder = folder
+            else:
+                return
+    
+        os.makedirs(server_path, exist_ok=True)
+        self.server_folder = server_path
+    
         self.label_status.setText("Status: Updating")
         QApplication.processEvents()
-        time.sleep(3)
-
-        # Prepare log folder and file
+    
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        profile_name = self.edit_profile.text().strip()
+        profile_name = self.edit_profile.text().strip() or "New Server"
         log_base_folder = self.edit_update_log_location.text().strip() or server_path
         profile_clean = profile_name.replace("/", "-").replace("\\", "-")
-        subfolder_name = profile_name + " Update Logs"
-        update_log_folder = os.path.join(log_base_folder, profile_clean, subfolder_name)
+        update_log_folder = os.path.join(log_base_folder, profile_clean, profile_name + " Update Logs")
         os.makedirs(update_log_folder, exist_ok=True)
+    
         log_file_path = os.path.join(update_log_folder, f"{profile_name} update log {timestamp}.log")
-        log_file = open(log_file_path, "w", encoding="utf-8")
-
-        # SteamCMD arguments (force_install_dir must come before login)
-        arguments = [
-            "+force_install_dir", server_path,
-            "+login", "anonymous",
-            "+app_update", "2430930", "validate",
-            "+quit"
-        ]
-
-        # Terminal dialog setup
-        terminalDialog = QDialog(self)
-        terminalDialog.setWindowTitle(f"Updating {profile_name} Server")
-        terminalDialog.setWindowFlag(Qt.WindowCloseButtonHint, False)
-        layout = QVBoxLayout(terminalDialog)
-        terminalOutput = QPlainTextEdit(terminalDialog)
-        terminalOutput.setReadOnly(True)
-        layout.addWidget(terminalOutput)
-        terminalDialog.resize(600, 400)
-
-        # Worker to run SteamCMD via wexpect (captures Win32 console output)
+    
+        bat_path = os.path.join(
+            tempfile.gettempdir(),
+            f"ark_update_{profile_clean}_{timestamp}.bat"
+        )
+    
+        with open(bat_path, "w", encoding="utf-8", errors="ignore") as bat:
+            bat.write("@echo off\n")
+            bat.write(f"title Updating {profile_name} Server\n")
+            bat.write("echo ==============================================\n")
+            bat.write(f"echo Updating {profile_name} Server\n")
+            bat.write(f"echo Server Path: {server_path}\n")
+            bat.write("echo ==============================================\n")
+            bat.write("echo.\n")
+    
+            bat.write("echo [1/2] Running SteamCMD first-time/bootstrap check...\n")
+            bat.write(f'"{steamcmd_exe}" +quit\n')
+            bat.write("echo.\n")
+    
+            bat.write("echo [2/2] Installing / Updating ARK Survival Ascended Dedicated Server...\n")
+            bat.write(
+                f'"{steamcmd_exe}" '
+                f'+force_install_dir "{server_path}" '
+                f'+login anonymous '
+                f'+app_update 2430930 validate '
+                f'+quit\n'
+            )
+    
+            bat.write("set EXITCODE=%ERRORLEVEL%\n")
+            bat.write("echo.\n")
+            bat.write("echo ==============================================\n")
+            bat.write("if %EXITCODE%==0 (\n")
+            bat.write("    echo Update finished successfully.\n")
+            bat.write(") else (\n")
+            bat.write("    echo Update failed with exit code %EXITCODE%.\n")
+            bat.write(")\n")
+            bat.write("echo ==============================================\n")
+            bat.write("echo.\n")
+            bat.write("timeout /t 10\n")
+            bat.write("exit /b %EXITCODE%\n")
+    
         class UpdateWorker(QObject):
-            output   = pyqtSignal(str)
             finished = pyqtSignal()
-            error    = pyqtSignal(str)
-
-            def __init__(self, steamcmd_exe: str, arguments: list, parent=None):
+            error = pyqtSignal(str)
+    
+            def __init__(self, batch_file, parent=None):
                 super().__init__(parent)
-                self.steamcmd_exe = steamcmd_exe
-                self.arguments    = arguments
-
+                self.batch_file = batch_file
+    
             def run(self):
                 try:
-                    # Build a properly quoted command
-                    cmd_parts = [shlex.quote(self.steamcmd_exe)] + [shlex.quote(arg) for arg in self.arguments]
-                    cmd = " ".join(cmd_parts)
-
-                    # Spawn under winpty to capture all console output, set a small timeout to non-block
-                    child = wexpect.spawn(cmd, timeout=1)
-
-                    # Live read while process is running
-                    while child.isalive():
-                        try:
-                            line = child.readline().rstrip()
-                        except wexpect.TIMEOUT:
-                            continue
-                        except wexpect.EOF:
-                            break
-                        if line:
-                            self.output.emit(line)
-
-                    # Drain any remaining output
-                    try:
-                        remaining = child.read().decode("utf-8", errors="ignore")
-                    except Exception:
-                        remaining = ""
-                    for rem_line in remaining.splitlines():
-                        if rem_line:
-                            self.output.emit(rem_line)
-
-                    # Signal that we’re done
+                    proc = subprocess.Popen(
+                        ["cmd.exe", "/c", self.batch_file],
+                        creationflags=subprocess.CREATE_NEW_CONSOLE if hasattr(subprocess, "CREATE_NEW_CONSOLE") else 0
+                    )
+                    return_code = proc.wait()
+    
+                    if return_code != 0:
+                        raise RuntimeError(f"SteamCMD update failed with exit code {return_code}")
+    
                     self.finished.emit()
-
+    
                 except Exception as e:
                     self.error.emit(str(e))
-
-        # Thread and worker setup
+    
         self.update_thread = QThread(self)
-        self.update_worker = UpdateWorker(steamcmd_exe, arguments)
+        self.update_worker = UpdateWorker(bat_path)
         self.update_worker.moveToThread(self.update_thread)
+    
         self.update_worker.finished.connect(self.update_thread.quit)
         self.update_worker.finished.connect(self.update_worker.deleteLater)
         self.update_thread.finished.connect(self.update_thread.deleteLater)
-
-        # Output handler writes to both terminal and log
-        def update_terminal_output(text):
-            terminalOutput.appendPlainText(text)
-            log_file.write(text + "\n")
-            log_file.flush()
-            QApplication.processEvents()
-
-        # On complete: close log, dialog, update UI, notify
+    
         def update_complete():
-            log_file.close()
-            terminalDialog.accept()
             self.label_status.setText("Status: Stopped")
-            msg = f"ARK Server update finished successfully!\nLogs saved at:\n{log_file_path}" if not auto_update else f"Update finished!\nLog saved:\n{log_file_path}"
-            self.auto_dismiss_message("Update Complete", msg, 10)
+    
+            exe_file = os.path.join(server_path, "ShooterGame", "Binaries", "Win64", "ArkAscendedServer.exe")
+            if os.path.exists(exe_file):
+                msg = f"ARK Server install/update finished successfully!\n\nServer installed at:\n{server_path}"
+            else:
+                msg = f"SteamCMD finished, but ArkAscendedServer.exe was not found yet.\n\nCheck:\n{server_path}"
+    
+            if not auto_update:
+                self.auto_dismiss_message("Update Complete", msg, 10)
+            else:
+                print(msg)
+    
             if on_complete:
                 on_complete()
-
-        # On error: close log, dialog, show error
+    
         def update_error(err):
-            log_file.close()
-            terminalDialog.accept()
-            QMessageBox.critical(self, "Update Error", err)
             self.label_status.setText("Status: Stopped")
-
-        # Connect signals
-        self.update_worker.output.connect(update_terminal_output)
+            QMessageBox.critical(self, "Update Error", err)
+    
         self.update_worker.finished.connect(update_complete)
         self.update_worker.error.connect(update_error)
-
+    
         self.update_thread.started.connect(self.update_worker.run)
         self.update_thread.start()
-
-        terminalDialog.setModal(False)
-        terminalDialog.show()
 
 
     def find_real_ark_pid(self):
@@ -1269,8 +1273,8 @@ class ServerTab(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "Select Installation Folder")
         if folder:
             self.edit_install.setText(folder)
-            # Optionally, if the installation folder is meant to be the server folder:
             self.server_folder = folder
+            os.makedirs(folder, exist_ok=True)
 
     # -------------------------
     # Import / Start
@@ -1468,6 +1472,19 @@ class ServerTab(QWidget):
     
             os.remove(zip_path)  # Delete the ZIP after extraction
             self.edit_steamcmd.setText(save_path)  # Set the extracted path
+
+            steamcmd_exe = os.path.join(save_path, "steamcmd.exe")
+            if os.path.exists(steamcmd_exe):
+                try:
+                    subprocess.run(
+                        [steamcmd_exe, "+quit"],
+                        cwd=save_path,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=120
+                    )
+                except Exception as bootstrap_error:
+                    print(f"[SteamCMD] First-time bootstrap failed: {bootstrap_error}")
     
             QMessageBox.information(self, "Download Complete", f"SteamCMD downloaded to: {save_path}")
             self.button_download_steamcmd.setText("Download SteamCMD")
