@@ -14,24 +14,465 @@ import ctypes
 import glob
 import shlex
 import re
+import socket
+import struct
 import wexpect
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QGridLayout,
     QHBoxLayout, QLabel, QPushButton, QLineEdit, QFileDialog, QMessageBox, QAction,
     QGroupBox, QCheckBox, QTimeEdit, QDialog, QVBoxLayout, QComboBox, QScrollArea, QFrame, QSizePolicy,
-    QPlainTextEdit, QTextEdit
+    QPlainTextEdit, QTextEdit, QStyleFactory, QTabBar
 )
 from PyQt5.QtCore import Qt, QTimer, QTime, QDate, QDateTime, QProcess, pyqtSignal, QThread, QObject
-from PyQt5.QtGui import QColor, QIcon
+from PyQt5.QtGui import QColor, QIcon, QPalette, QPainter, QPainterPath, QPen, QCursor
 
 # ---------------------------
 # 1) Extra Important Rules
 # ---------------------------
 
-# Darker green and red (muted tones)
-DARK_GREEN = QColor("#228B22")  # forest green
-DARK_RED = QColor("#CE2029")    # dark red
+# Tab accent colors (online / offline) — match Start / Stop buttons
+DARK_GREEN = QColor("#1f8a4c")
+DARK_RED = QColor("#c4454a")
+TAB_GOLD = QColor("#e8a838")
+
+APP_BG = "#10141c"
+
+APP_STYLESHEET = """
+QWidget {
+    font-family: "Segoe UI", "Segoe UI Variable", sans-serif;
+    font-size: 13px;
+    color: #e8edf5;
+}
+QMainWindow, QDialog, QTabWidget, QTabWidget::pane, QStackedWidget {
+    background-color: #10141c;
+}
+QWidget#serverTab, QWidget#scrollRoot {
+    background-color: #10141c;
+}
+QToolBar {
+    background: #161c27;
+    border: none;
+    border-bottom: 1px solid #2a3344;
+    spacing: 8px;
+    padding: 6px 10px;
+}
+QToolBar QToolButton {
+    background: #222a38;
+    color: #e8edf5;
+    border: 1px solid #2a3344;
+    border-radius: 8px;
+    padding: 6px 12px;
+}
+QToolBar QToolButton:hover {
+    background: #2b3548;
+    border-color: #e8a838;
+}
+QTabWidget::pane {
+    background: #10141c;
+    border: none;
+    top: -1px;
+}
+QTabBar {
+    background: #10141c;
+    border: none;
+}
+QTabBar::tab {
+    background: transparent;
+    padding: 8px 18px;
+    margin-right: 6px;
+    min-width: 90px;
+    border: none;
+}
+QTabBar::close-button {
+    margin: 2px;
+}
+QLabel {
+    color: #c9d3e3;
+    font-size: 13px;
+}
+QLabel#statCaption {
+    color: #8b95a8;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+}
+QLabel#statValue {
+    color: #f4f7fb;
+    font-size: 16px;
+    font-weight: 600;
+}
+QLabel#fieldLabel {
+    color: #8b95a8;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+}
+QLineEdit, QTimeEdit, QComboBox, QPlainTextEdit, QTextEdit {
+    background-color: #171e2a;
+    color: #e8edf5;
+    border: 1px solid #2a3344;
+    border-radius: 8px;
+    padding: 6px 10px;
+    min-height: 22px;
+    selection-background-color: #e8a838;
+    selection-color: #1a1408;
+}
+QLineEdit:focus, QTimeEdit:focus, QComboBox:focus {
+    border: 1px solid #e8a838;
+}
+QLineEdit:read-only {
+    color: #b7c2d4;
+    background-color: #141a24;
+}
+QPushButton {
+    background-color: #222a38;
+    color: #e8edf5;
+    border: 1px solid #334056;
+    padding: 7px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 8px;
+    min-height: 34px;
+    min-width: 112px;
+}
+QPushButton:hover {
+    background-color: #2c364a;
+    border-color: #e8a838;
+}
+QPushButton:pressed {
+    background-color: #1b2230;
+}
+QPushButton#btnPrimary {
+    background-color: #e8a838;
+    color: #1a1408;
+    border: none;
+}
+QPushButton#btnPrimary:hover {
+    background-color: #f0ba55;
+}
+QPushButton[role="start"] {
+    background-color: #1f8a4c;
+    color: #ffffff;
+    border: none;
+    min-width: 96px;
+}
+QPushButton[role="start"]:hover {
+    background-color: #24a35a;
+}
+QPushButton[role="stop"] {
+    background-color: #c4454a;
+    color: #ffffff;
+    border: none;
+    min-width: 96px;
+}
+QPushButton[role="stop"]:hover {
+    background-color: #d9555b;
+}
+QPushButton#plusButton {
+    background-color: #e8a838;
+    color: #1a1408;
+    font-size: 18px;
+    font-weight: 700;
+    border: none;
+    border-radius: 8px;
+    min-width: 32px;
+    min-height: 28px;
+}
+QGroupBox {
+    background-color: #161c27;
+    border: 1px solid #2a3344;
+    border-radius: 12px;
+    margin-top: 14px;
+    padding: 16px 12px 12px 12px;
+    font-weight: 600;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 14px;
+    padding: 0 8px;
+    color: #e8a838;
+    background-color: #10141c;
+}
+QFrame#statCard {
+    background-color: #161c27;
+    border: 1px solid #2a3344;
+    border-radius: 12px;
+}
+QFrame#headerCard {
+    background-color: #161c27;
+    border: 1px solid #2a3344;
+    border-radius: 12px;
+}
+QWidget#fieldBlock {
+    background: transparent;
+}
+QCheckBox {
+    color: #d5deec;
+    spacing: 8px;
+}
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    border: 1px solid #3b465c;
+    background: #171e2a;
+}
+QCheckBox::indicator:checked {
+    background: #e8a838;
+    border-color: #e8a838;
+}
+QComboBox::drop-down {
+    border: none;
+    width: 24px;
+}
+QComboBox QAbstractItemView {
+    background: #171e2a;
+    color: #e8edf5;
+    border: 1px solid #2a3344;
+    selection-background-color: #2c364a;
+}
+QComboBox::down-button, QTimeEdit::up-button, QTimeEdit::down-button {
+    background: #222a38;
+    border: none;
+    width: 20px;
+}
+QScrollArea, QAbstractScrollArea, QAbstractScrollArea > QWidget, QAbstractScrollArea::viewport {
+    border: none;
+    background-color: #10141c;
+}
+QScrollBar:vertical {
+    background: #10141c;
+    width: 10px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: #3b465c;
+    border-radius: 5px;
+    min-height: 24px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: #10141c;
+}
+QMessageBox {
+    background-color: #161c27;
+}
+"""
+
+
+class StatusTabBar(QTabBar):
+    """Server tabs with a status border and a gold underline when selected."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDrawBase(False)
+        self.setMouseTracking(True)
+        self.setExpanding(False)
+
+    def tab_is_running(self, index):
+        tab_widget = self.parent()
+        if not isinstance(tab_widget, QTabWidget):
+            return False
+        page = tab_widget.widget(index)
+        return bool(getattr(page, "server_running", False))
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        hover_index = self.tabAt(self.mapFromGlobal(QCursor.pos()))
+
+        for index in range(self.count()):
+            rect = self.tabRect(index).adjusted(1, 3, -6, 0)
+            if rect.width() < 8 or rect.height() < 8:
+                continue
+
+            selected = index == self.currentIndex()
+            running = self.tab_is_running(index)
+            status = DARK_GREEN if running else DARK_RED
+            hovered = index == hover_index and not selected
+
+            if selected:
+                fill = QColor("#243044")
+                text_color = QColor("#e8edf5")
+            elif hovered:
+                fill = QColor("#222b3c")
+                text_color = QColor("#e8edf5")
+            else:
+                fill = QColor("#1a2130")
+                text_color = QColor("#c9d3e3")
+
+            radius = 8.0
+            path = QPainterPath()
+            path.moveTo(rect.left(), rect.bottom())
+            path.lineTo(rect.left(), rect.top() + radius)
+            path.quadTo(rect.left(), rect.top(), rect.left() + radius, rect.top())
+            path.lineTo(rect.right() - radius, rect.top())
+            path.quadTo(rect.right(), rect.top(), rect.right(), rect.top() + radius)
+            path.lineTo(rect.right(), rect.bottom())
+            path.closeSubpath()
+
+            painter.fillPath(path, fill)
+
+            outline = QPen(status, 2)
+            outline.setJoinStyle(Qt.RoundJoin)
+            outline.setCapStyle(Qt.FlatCap)
+            painter.setPen(outline)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(path)
+
+            bottom = QPen(TAB_GOLD if selected else status, 2)
+            bottom.setCapStyle(Qt.FlatCap)
+            painter.setPen(bottom)
+            y = rect.bottom() - 1
+            painter.drawLine(rect.left() + 1, y, rect.right() - 1, y)
+
+            font = self.font()
+            font.setBold(selected)
+            painter.setFont(font)
+            painter.setPen(text_color)
+            text_rect = rect.adjusted(12, 0, -22, -2)
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, self.tabText(index).strip())
+
+
+def make_field_label(text):
+    label = QLabel(text.upper())
+    label.setObjectName("fieldLabel")
+    return label
+
+
+def make_labeled_block(label_text, widget, extras=None):
+    block = QWidget()
+    block.setObjectName("fieldBlock")
+    layout = QVBoxLayout(block)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(5)
+    layout.addWidget(make_field_label(label_text))
+    if extras:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(widget, 1)
+        for extra in extras:
+            row.addWidget(extra)
+        layout.addLayout(row)
+    else:
+        layout.addWidget(widget)
+    return block
+
+
+def make_stat_card(title, value_label):
+    card = QFrame()
+    card.setObjectName("statCard")
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(14, 12, 14, 12)
+    layout.setSpacing(4)
+    caption = QLabel(title.upper())
+    caption.setObjectName("statCaption")
+    value_label.setObjectName("statValue")
+    value_label.setWordWrap(True)
+    layout.addWidget(caption)
+    layout.addWidget(value_label)
+    return card
+
+
+def parse_query_port(launch_args):
+    match = re.search(r"QueryPort=(\d+)", launch_args or "")
+    return int(match.group(1)) if match else 27015
+
+
+def parse_max_players(launch_args):
+    text = launch_args or ""
+    match = re.search(r"WinLiveMaxPlayers=(\d+)", text)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"[?&]MaxPlayers=(\d+)", text, re.IGNORECASE)
+    return int(match.group(1)) if match else 70
+
+
+def _read_cstring(data, offset):
+    end = data.find(b"\x00", offset)
+    if end < 0:
+        return "", len(data)
+    return data[offset:end].decode("utf-8", errors="replace"), end + 1
+
+
+def query_a2s_info(host, port, timeout=2.0):
+    """
+    Queries a Source / ARK server with A2S_INFO and returns
+    {'players': int, 'max_players': int, 'name': str, 'map': str} or None.
+    """
+    request = b"\xFF\xFF\xFF\xFFTSource Engine Query\x00"
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.sendto(request, (host, port))
+        data, _ = sock.recvfrom(4096)
+        if len(data) >= 9 and data[4] == 0x41:
+            sock.sendto(request + data[5:9], (host, port))
+            data, _ = sock.recvfrom(4096)
+        if len(data) < 6 or data[4] != 0x49:
+            return None
+        offset = 6  # skip header + type + protocol
+        name, offset = _read_cstring(data, offset)
+        map_name, offset = _read_cstring(data, offset)
+        _, offset = _read_cstring(data, offset)  # folder
+        _, offset = _read_cstring(data, offset)  # game
+        offset += 2  # steam app id
+        if offset + 2 > len(data):
+            return None
+        players = data[offset]
+        max_players = data[offset + 1]
+        return {
+            "name": name,
+            "map": map_name,
+            "players": int(players),
+            "max_players": int(max_players),
+        }
+    except (socket.timeout, OSError, struct.error):
+        return None
+    finally:
+        sock.close()
+
+
+def query_local_a2s(port, timeout=2.0):
+    hosts = ["127.0.0.1"]
+    try:
+        hosts.append(socket.gethostbyname(socket.gethostname()))
+    except OSError:
+        pass
+    seen = set()
+    for host in hosts:
+        if not host or host in seen:
+            continue
+        seen.add(host)
+        info = query_a2s_info(host, port, timeout=timeout)
+        if info:
+            return info
+    return None
+
+
+class QueryWorker(QObject):
+    finished = pyqtSignal(object)
+
+    def __init__(self, port):
+        super().__init__()
+        self.port = port
+
+    def run(self):
+        self.finished.emit(query_local_a2s(self.port))
 
 class TerminalLogger:
     def __init__(self, write_callback):
@@ -198,11 +639,11 @@ def add_dynamic_firewall_rules(tab, profile, launch_args, game_user_settings_ini
     # Update the UI label after all attempts
     if hasattr(tab, "label_firewall"):
         if success:
-            tab.label_firewall.setText("Firewall Status: Good")
-            tab.label_firewall.setStyleSheet("color: green;")
+            tab.label_firewall.setText("Good")
+            tab.label_firewall.setStyleSheet("color: #3dd68c;")
         else:
-            tab.label_firewall.setText("Firewall Status: Bad – Need Admin Permission")
-            tab.label_firewall.setStyleSheet("color: red;")
+            tab.label_firewall.setText("Needs Admin")
+            tab.label_firewall.setStyleSheet("color: #f07178;")
 
 def copy_server_log_on_stop(server_folder, profile_name, log_dest_folder):
     """
@@ -278,6 +719,7 @@ class ServerTab(QWidget):
         self.firewall_status = "Unknown"  # Can be: Good, Bad, Unknown
         self.server_folder = ""
         self.server_process = None
+        self.server_running = False
 
         # We'll store whether we've done today's shutdown
         self.shutdown_triggered_today = False
@@ -323,24 +765,20 @@ class ServerTab(QWidget):
     
         # Update status and UI
         if success:
-            self.label_firewall.setText("Firewall Status: Good")
-            self.label_firewall.setStyleSheet("color: #006400;")
+            self.label_firewall.setText("Good")
+            self.label_firewall.setStyleSheet("color: #3dd68c;")
             self.firewall_status = "Good"
         else:
-            self.label_firewall.setText("Firewall Status: Bad – Need Admin Permission")
-            self.label_firewall.setStyleSheet("color: red;")
+            self.label_firewall.setText("Needs Admin")
+            self.label_firewall.setStyleSheet("color: #f07178;")
             self.firewall_status = "Bad"
 
     def update_tab_color(self, is_running: bool):
-        """
-        Changes the tab color to darker green (online) or darker red (offline).
-        """
+        """Updates the tab border: green while running, red while stopped."""
+        self.server_running = bool(is_running)
         main_window = self.window()
-        if isinstance(main_window, QMainWindow) and hasattr(main_window, 'tabs'):
-            tab_index = main_window.tabs.indexOf(self)
-            if tab_index >= 0:
-                color = QColor("#228B22") if is_running else QColor("#CE2029")
-                main_window.tabs.tabBar().setTabTextColor(tab_index, color)
+        if isinstance(main_window, QMainWindow) and hasattr(main_window, "tabs"):
+            main_window.tabs.tabBar().update()
 
     
     def browse_backup_destination(self):
@@ -352,119 +790,235 @@ class ServerTab(QWidget):
         if folder:
             self.edit_backup_dest.setText(folder)
 
+
+    def apply_start_button(self, running):
+        if running:
+            self.button_start.setText("Stop")
+            self.button_start.setProperty("role", "stop")
+            self.button_start.setStyleSheet(
+                "background-color: #c4454a; color: #ffffff; border: none; border-radius: 8px; "
+                "font-weight: 600; min-width: 96px; padding: 7px 14px;"
+            )
+        else:
+            self.button_start.setText("Start")
+            self.button_start.setProperty("role", "start")
+            self.button_start.setStyleSheet(
+                "background-color: #1f8a4c; color: #ffffff; border: none; border-radius: 8px; "
+                "font-weight: 600; min-width: 96px; padding: 7px 14px;"
+            )
+
+    def configured_max_players(self):
+        return parse_max_players(self.edit_launch_args.text())
+
+    def ark_process_is_running(self):
+        if not self.server_folder:
+            return False
+        target_folder = os.path.normpath(self.server_folder)
+        try:
+            for proc in psutil.process_iter(["name", "exe"]):
+                if proc.info.get("name") != "ArkAscendedServer.exe":
+                    continue
+                exe_path = os.path.normpath(proc.info.get("exe") or "")
+                if target_folder in exe_path:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def set_players_label(self, current=0, maximum=None, unknown=False):
+        maximum = maximum if maximum is not None else self.configured_max_players()
+        if unknown:
+            self.label_players.setText(f"— / {maximum}")
+        else:
+            self.label_players.setText(f"{current} / {maximum}")
+
+    def set_query_offline(self):
+        self.label_availability.setText("Offline")
+        self.set_players_label(0)
+
+    def poll_server_query(self):
+        process_running = self.server_process is not None or self.ark_process_is_running()
+        if not process_running:
+            if self.label_status.text() not in ("Updating", "Running, Backing up"):
+                if self.label_status.text() != "Stopped":
+                    self.label_status.setText("Stopped")
+                    self.apply_start_button(False)
+                    self.update_tab_color(is_running=False)
+                    self.server_process = None
+                self.set_query_offline()
+            return
+
+        if self.label_status.text() == "Stopped":
+            self.label_status.setText("Running")
+            self.apply_start_button(True)
+            self.update_tab_color(is_running=True)
+            if not self._started_at:
+                self._started_at = time.time()
+
+        if getattr(self, "_query_busy", False):
+            return
+
+        port = parse_query_port(self.edit_launch_args.text())
+        self._query_busy = True
+        self._query_thread = QThread()
+        self._query_worker = QueryWorker(port)
+        self._query_worker.moveToThread(self._query_thread)
+        self._query_thread.started.connect(self._query_worker.run)
+        self._query_worker.finished.connect(self.on_query_result)
+        self._query_worker.finished.connect(self._query_thread.quit)
+        self._query_worker.finished.connect(self._query_worker.deleteLater)
+        self._query_thread.finished.connect(self._query_thread.deleteLater)
+        self._query_thread.finished.connect(lambda: setattr(self, "_query_busy", False))
+        self._query_thread.start()
+
+    def on_query_result(self, info):
+        process_running = self.server_process is not None or self.ark_process_is_running()
+        if not process_running:
+            self.set_query_offline()
+            return
+
+        if info:
+            self.label_availability.setText("Online")
+            self.set_players_label(info.get("players", 0), info.get("max_players") or self.configured_max_players())
+            return
+
+        started_at = getattr(self, "_started_at", 0)
+        if started_at and (time.time() - started_at) < 90:
+            self.label_availability.setText("Starting…")
+        else:
+            self.label_availability.setText("Unreachable")
+        self.set_players_label(unknown=True)
+
+    def show_rcon_placeholder(self):
+        QMessageBox.information(
+            self,
+            "RCON",
+            "Live player count now uses the Steam query port.\n\n"
+            "The RCON console is the next feature to add."
+        )
+
     def init_ui(self):
+        self.setObjectName("serverTab")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
+
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(5)
-        
-        # ---------------------
-        # Fixed Header Layout
-        # ---------------------
-        self.header_layout = QGridLayout()
-        self.header_layout.setSpacing(5)
-        main_layout.addLayout(self.header_layout)
-    
-        #
-        # 1) Put rows 0–4 (everything ABOVE the scroll area) in self.header_layout
-        #
-    
-        # Row 0: Profile & buttons
-        row0Layout = QHBoxLayout()
-        row0Layout.setSpacing(5)
-    
-        label_profile = QLabel("Profile:")
+        main_layout.setContentsMargins(16, 16, 16, 16)
+        main_layout.setSpacing(12)
+
+        header_card = QFrame()
+        header_card.setObjectName("headerCard")
+        header_layout = QVBoxLayout(header_card)
+        header_layout.setContentsMargins(18, 16, 18, 16)
+        header_layout.setSpacing(14)
+        main_layout.addWidget(header_card)
+
         self.edit_profile = QLineEdit("New Server")
-    
         self.button_start = QPushButton("Start")
+        self.button_start.setProperty("role", "start")
+        self.button_upgrade = QPushButton("Update / Verify")
+        self.button_upgrade.setObjectName("btnPrimary")
+        self.button_rcon = QPushButton("RCON")
+        self.button_rcon.setToolTip("RCON console is next. Player count already uses the query port.")
+        self.button_rcon.clicked.connect(self.show_rcon_placeholder)
 
-    
-        # 1) Let the Start button expand if there's space...
-        self.button_start.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        # 2) ...but cap its width so it doesn't go "past the red line."
-        self.button_start.setMaximumWidth(143)
-    
-        row0Layout.addWidget(label_profile)
-        row0Layout.addWidget(self.edit_profile)
-        row0Layout.addWidget(self.button_start)
-
-    
-        self.button_start.setStyleSheet("background-color: green; color: white;")
-    
-        # Keep the row left-aligned; the maxWidth ensures Start doesn't overshoot
-        self.header_layout.addLayout(row0Layout, 0, 0, 1, 8, alignment=Qt.AlignLeft)
-    
-        # Row 1: Installed Version & Installation Location
-        label_version = QLabel("Installed Version:")
         self.edit_version = QLineEdit("")
         self.edit_version.setReadOnly(True)
-    
-        label_install = QLabel("Installation Location:")
         self.edit_install = QLineEdit("")
         self.edit_install.setReadOnly(True)
         self.button_set_loc = QPushButton("Set Location")
-        self.button_set_loc.clicked.connect(self.set_install_location)  
-    
-        self.header_layout.addWidget(label_version, 1, 0)
-        self.header_layout.addWidget(self.edit_version, 1, 1, 1, 2)
-        self.header_layout.addWidget(label_install, 1, 3)
-        self.header_layout.addWidget(self.edit_install, 1, 4, 1, 3)
-        self.header_layout.addWidget(self.button_set_loc, 1, 7)
-    
-        # Row 2: SteamCMD Location + Browse + Download
-        label_steamcmd = QLabel("SteamCMD Location:")
+        self.button_set_loc.clicked.connect(self.set_install_location)
         self.edit_steamcmd = QLineEdit("")
         self.button_browse_steamcmd = QPushButton("Browse")
-        self.button_download_steamcmd = QPushButton("Download SteamCMD")
-        self.button_download_steamcmd.clicked.connect(self.download_steamcmd)
         self.button_browse_steamcmd.clicked.connect(self.browse_steamcmd_location)
-    
-        self.header_layout.addWidget(label_steamcmd, 2, 0)
-        self.header_layout.addWidget(self.edit_steamcmd, 2, 1, 1, 3)
-        self.header_layout.addWidget(self.button_browse_steamcmd, 2, 4)
-        self.header_layout.addWidget(self.button_download_steamcmd, 2, 5)
-    
-        # Row 3: Command Line Launch Arguments
-        label_launch_args = QLabel("Launch Arguments:")
+        self.button_download_steamcmd = QPushButton("Download SteamCMD")
+        self.button_download_steamcmd.setObjectName("btnPrimary")
+        self.button_download_steamcmd.clicked.connect(self.download_steamcmd)
         self.edit_launch_args = QLineEdit()
-        self.header_layout.addWidget(label_launch_args, 3, 0)
-        self.header_layout.addWidget(self.edit_launch_args, 3, 1, 1, 6)
-    
-        # Row 4: Status, Availability, Players, Upgrade/Verify
-        self.label_status = QLabel("Status: Stopped")
-        self.label_firewall = QLabel("Firewall Status: Not Checked")
-        self.label_availability = QLabel("Availability: Offline")
-        self.label_players = QLabel("Players: 0 / 25")
-        self.button_upgrade = QPushButton("Install / Update / Verify")
-    
-        status_layout = QVBoxLayout()
-        status_layout.addWidget(self.label_status)
-        status_layout.addWidget(self.label_firewall)
-        self.header_layout.addLayout(status_layout, 4, 0, 1, 2)
-        self.header_layout.addWidget(self.label_availability, 4, 2, 1, 3)
-        self.header_layout.addWidget(self.label_players,      4, 5, 1, 2)
-        self.header_layout.addWidget(self.button_upgrade,     4, 7)
 
-        # Create the RCON button here so we can add it to row 4
-        self.button_rcon = QPushButton("RCON")
+        actions = QWidget()
+        actions.setObjectName("fieldBlock")
+        actions_layout = QVBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(5)
+        controls_label = make_field_label("Controls")
+        controls_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        actions_layout.addWidget(controls_label)
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(8)
+        action_row.addStretch()
+        action_row.addWidget(self.button_start)
+        action_row.addWidget(self.button_upgrade)
+        action_row.addWidget(self.button_rcon)
+        actions_layout.addLayout(action_row)
 
-            # Put RCON at column 6, so it's just left of "Update / Verify" (column 7)
-        self.header_layout.addWidget(self.button_rcon,        3, 7)
-        self.header_layout.addWidget(self.button_upgrade,     4, 7)
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(12)
+        form.setColumnStretch(0, 1)
+        form.setColumnStretch(1, 3)
+
+        form.addWidget(make_labeled_block("Profile", self.edit_profile), 0, 0)
+        form.addWidget(actions, 0, 1)
+
+        form.addWidget(make_labeled_block("Installed Version", self.edit_version), 1, 0)
+        form.addWidget(
+            make_labeled_block("Install Location", self.edit_install, [self.button_set_loc]),
+            1, 1
+        )
+
+        form.addWidget(
+            make_labeled_block(
+                "SteamCMD",
+                self.edit_steamcmd,
+                [self.button_browse_steamcmd, self.button_download_steamcmd],
+            ),
+            2, 0, 1, 2
+        )
+        form.addWidget(
+            make_labeled_block("Launch Arguments", self.edit_launch_args),
+            3, 0, 1, 2
+        )
+        header_layout.addLayout(form)
+
+        self.label_status = QLabel("Stopped")
+        self.label_firewall = QLabel("Not Checked")
+        self.label_availability = QLabel("Offline")
+        self.label_players = QLabel("0 / 70")
+        stats = QHBoxLayout()
+        stats.setSpacing(10)
+        stats.addWidget(make_stat_card("Status", self.label_status), 1)
+        stats.addWidget(make_stat_card("Availability", self.label_availability), 1)
+        stats.addWidget(make_stat_card("Players", self.label_players), 1)
+        stats.addWidget(make_stat_card("Firewall", self.label_firewall), 1)
+        header_layout.addLayout(stats)
+        self.edit_launch_args.textChanged.connect(
+            lambda: self.set_players_label(0) if self.label_availability.text() == "Offline" else None
+        )
         
         #
         # 2) Create the scrollable area for everything BELOW
         #
+
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-    
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.viewport().setAutoFillBackground(True)
+        self.scroll_area.viewport().setAttribute(Qt.WA_StyledBackground, True)
+
         scroll_content = QWidget()
+        scroll_content.setObjectName("scrollRoot")
+        scroll_content.setAttribute(Qt.WA_StyledBackground, True)
+        scroll_content.setAutoFillBackground(True)
         self.scroll_area.setWidget(scroll_content)
-    
-        # Use a QVBoxLayout for the scrollable content
+
         self.scroll_layout = QVBoxLayout(scroll_content)
-    
-        # Finally, add the scroll area to the main layout
-        main_layout.addWidget(self.scroll_area)
+        self.scroll_layout.setContentsMargins(2, 4, 12, 8)
+        self.scroll_layout.setSpacing(10)
+
+        main_layout.addWidget(self.scroll_area, 1)
     
         #
         # 3) Place Automatic Start and Automatic Shutdown inside the scroll_layout
@@ -498,9 +1052,7 @@ class ServerTab(QWidget):
         self.checkbox_auto_start_update = QCheckBox("Perform update (Prior to Server Starting)")
         auto_time_layout.addWidget(self.checkbox_auto_start_update)
         auto_start_layout.addLayout(auto_time_layout)
-    
-        self.scroll_layout.addWidget(self.auto_start_group)
-    
+
         # --- Automatic Shutdown ---
         self.scheduler_group = QGroupBox("Automatic Shutdown / Restart")
         scheduler_layout = QVBoxLayout()
@@ -530,17 +1082,21 @@ class ServerTab(QWidget):
         time_layout.addWidget(self.checkbox_then_restart)
     
         scheduler_layout.addLayout(time_layout)
-    
-        self.scroll_layout.addWidget(self.scheduler_group)
-    
-        # Row 6: Server Configuration Collapsible Section
+
+        schedule_row = QHBoxLayout()
+        schedule_row.setSpacing(10)
+        schedule_row.addWidget(self.auto_start_group, 1)
+        schedule_row.addWidget(self.scheduler_group, 1)
+        self.scroll_layout.addLayout(schedule_row)
+
+        # Row 6: Server Configuration
         self.config_group = QGroupBox("Server Configuration")
         self.config_group.setCheckable(False)
-    
-        config_layout = QVBoxLayout()
-        self.button_edit_game_ini = QPushButton("Edit Game")
-        self.button_edit_gameusersettings_ini = QPushButton("Edit GameUserSettings")
-    
+
+        config_layout = QHBoxLayout()
+        config_layout.setSpacing(10)
+        self.button_edit_game_ini = QPushButton("Edit Game.ini")
+        self.button_edit_gameusersettings_ini = QPushButton("Edit GameUserSettings.ini")
         config_layout.addWidget(self.button_edit_game_ini)
         config_layout.addWidget(self.button_edit_gameusersettings_ini)
         self.config_group.setLayout(config_layout)
@@ -559,30 +1115,23 @@ class ServerTab(QWidget):
         auto_backup_layout = QVBoxLayout()
         self.auto_backup_group.setLayout(auto_backup_layout)
     
-        # Backup Interval
-        interval_layout = QHBoxLayout()
-        interval_layout.setAlignment(Qt.AlignLeft)  # shift everything left
-        interval_layout.addWidget(QLabel("Backup Interval:"))
-    
+        backup_options = QHBoxLayout()
+        backup_options.setAlignment(Qt.AlignLeft)
+        backup_options.setSpacing(16)
+        backup_options.addWidget(QLabel("Backup Interval:"))
         self.backup_interval_combo = QComboBox()
         self.backup_interval_combo.addItems([
             "30 mins", "1 hr", "3 hrs", "6 hrs", "12 hrs", "24 hrs"
         ])
         self.backup_interval_combo.setFixedWidth(180)
-        interval_layout.addWidget(self.backup_interval_combo)
-        auto_backup_layout.addLayout(interval_layout)
-
-        # Backup Folders to Keep
-        backup_limit_layout = QHBoxLayout()
-        backup_limit_layout.setAlignment(Qt.AlignLeft)
-        backup_limit_layout.addWidget(QLabel("Backup Folders to Keep:"))
-        
+        backup_options.addWidget(self.backup_interval_combo)
+        backup_options.addWidget(QLabel("Backup Folders to Keep:"))
         self.backup_limit_combo = QComboBox()
         self.backup_limit_combo.addItems(["10", "20", "30", "40", "50", "100"])
         self.backup_limit_combo.setFixedWidth(100)
-        backup_limit_layout.addWidget(self.backup_limit_combo)
-        
-        auto_backup_layout.addLayout(backup_limit_layout)
+        backup_options.addWidget(self.backup_limit_combo)
+        backup_options.addStretch()
+        auto_backup_layout.addLayout(backup_options)
     
         # Backup Destination
         dest_layout = QHBoxLayout()
@@ -594,54 +1143,56 @@ class ServerTab(QWidget):
         auto_backup_layout.addLayout(dest_layout)
         self.button_browse_backup_dest.clicked.connect(self.browse_backup_destination)
     
-        # Manual Backup Button
+        backup_actions = QHBoxLayout()
         self.button_manual_backup = QPushButton("Backup Now")
-        auto_backup_layout.addWidget(self.button_manual_backup)
         self.button_manual_backup.clicked.connect(self.perform_auto_backup)
-    
-        # Enable / Disable Auto Backup
         self.checkbox_enable_backup = QCheckBox("Enable Auto Backup")
-        auto_backup_layout.addWidget(self.checkbox_enable_backup)
+        backup_actions.addWidget(self.button_manual_backup)
+        backup_actions.addWidget(self.checkbox_enable_backup)
+        backup_actions.addStretch()
+        auto_backup_layout.addLayout(backup_actions)
     
         self.scroll_layout.addWidget(self.auto_backup_group)
-    
-        # Row: Log Location
-        label_log = QLabel("Game Log Location:")
+
+        log_group = QGroupBox("Logs")
+        log_layout = QGridLayout(log_group)
         self.edit_log_location = QLineEdit("")
         self.button_browse_log = QPushButton("Browse")
         self.button_browse_log.clicked.connect(self.browse_log_location)
-    
-        self.scroll_layout.addWidget(label_log)
-        self.scroll_layout.addWidget(self.edit_log_location)
-        self.scroll_layout.addWidget(self.button_browse_log)
-    
-        # Row: Update Log Location
-        label_update_log = QLabel("Update Log Location:")
         self.edit_update_log_location = QLineEdit("")
         self.button_browse_update_log = QPushButton("Browse")
         self.button_browse_update_log.clicked.connect(self.browse_update_log_location)
-    
-        self.scroll_layout.addWidget(label_update_log)
-        self.scroll_layout.addWidget(self.edit_update_log_location)
-        self.scroll_layout.addWidget(self.button_browse_update_log)
+        log_layout.addWidget(QLabel("Game Log Location"), 0, 0)
+        log_layout.addWidget(self.edit_log_location, 0, 1)
+        log_layout.addWidget(self.button_browse_log, 0, 2)
+        log_layout.addWidget(QLabel("Update Log Location"), 1, 0)
+        log_layout.addWidget(self.edit_update_log_location, 1, 1)
+        log_layout.addWidget(self.button_browse_update_log, 1, 2)
+        self.scroll_layout.addWidget(log_group)
     
         #
         # Connect your signals/slots (start_server, upgrade_server, etc.)
         #
         self.button_start.clicked.connect(self.start_server)
         self.button_upgrade.clicked.connect(self.upgrade_server)
-        # etc...
-    
-        self.last_backup_time = None  # Initialize the timer variable
+        self.button_manual_backup.setObjectName("btnPrimary")
+
+        self.last_backup_time = None
         self.backup_timer = QTimer(self)
         self.backup_timer.timeout.connect(self.check_auto_backup)
-        self.backup_timer.start(60 * 1000)  # every 60 seconds
+        self.backup_timer.start(60 * 1000)
 
-        # — Disable automatic firewall checks to prevent random pop-ups —
-        # self.firewall_timer = QTimer(self)
-        # self.firewall_timer.timeout.connect(self.verify_firewall_status)
-        # self.firewall_timer.start(5 * 60 * 1000)  # 5 minutes
+        self._query_busy = False
+        self._started_at = 0
+        self.query_timer = QTimer(self)
+        self.query_timer.timeout.connect(self.poll_server_query)
+        self.query_timer.start(8000)
+        QTimer.singleShot(1500, self.poll_server_query)
+
         self.verify_firewall_status()
+        self.set_players_label(0)
+        self.apply_start_button(False)
+        self.scroll_layout.addStretch()
 
         
         
@@ -761,7 +1312,7 @@ class ServerTab(QWidget):
         self.auto_backup_timer.start()
     
     def check_auto_backup(self):
-        if self.label_status.text() != "Status: Running":
+        if self.label_status.text() != "Running":
             print("[AutoBackup] Skipping backup – server is not running.")
             return
     
@@ -911,9 +1462,8 @@ class ServerTab(QWidget):
                     # reset tracking & update UI
                     self.server_process = None
                     self.server_pid = None
-                    self.label_status.setText("Status: Stopped")
-                    self.button_start.setText("Start")
-                    self.button_start.setStyleSheet("background-color: green; color: white;")
+                    self.label_status.setText("Stopped")
+                    self.apply_start_button(False)
 
                     # turn the tab label red to show it's offline
                     self.update_tab_color(is_running=False)
@@ -958,7 +1508,7 @@ class ServerTab(QWidget):
         if self.server_process:
             self.server_process.terminate()
             self.server_process = None
-            self.label_status.setText("Status: Stopped")
+            self.label_status.setText("Stopped")
 
         def save_log_on_stop(self):
             """
@@ -1028,7 +1578,7 @@ class ServerTab(QWidget):
         os.makedirs(server_path, exist_ok=True)
         self.server_folder = server_path
     
-        self.label_status.setText("Status: Updating")
+        self.label_status.setText("Updating")
         QApplication.processEvents()
     
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1113,7 +1663,7 @@ class ServerTab(QWidget):
         self.update_thread.finished.connect(self.update_thread.deleteLater)
     
         def update_complete():
-            self.label_status.setText("Status: Stopped")
+            self.label_status.setText("Stopped")
     
             exe_file = os.path.join(server_path, "ShooterGame", "Binaries", "Win64", "ArkAscendedServer.exe")
             if os.path.exists(exe_file):
@@ -1130,7 +1680,7 @@ class ServerTab(QWidget):
                 on_complete()
     
         def update_error(err):
-            self.label_status.setText("Status: Stopped")
+            self.label_status.setText("Stopped")
             QMessageBox.critical(self, "Update Error", err)
     
         self.update_worker.finished.connect(update_complete)
@@ -1192,7 +1742,7 @@ class ServerTab(QWidget):
         zip_name = f"{profile_name} Backup {timestamp}.zip"
         zip_path = os.path.join(profile_backup_dir, zip_name)
     
-        self.label_status.setText("Status: Running, Backing up")
+        self.label_status.setText("Running, Backing up")
         QApplication.processEvents()
     
         from PyQt5.QtCore import QObject, QThread, pyqtSignal
@@ -1224,7 +1774,7 @@ class ServerTab(QWidget):
         def on_backup_complete():
             msg = QMessageBox(self)
             msg.setWindowTitle("Backup Complete")
-            self.label_status.setText("Status: Running")
+            self.label_status.setText("Running")
             QApplication.processEvents()
             msg.setText(f"Backup saved to:\n{zip_path}\n\nThis will close in 10 seconds...")
             msg.setIcon(QMessageBox.Information)
@@ -1258,7 +1808,7 @@ class ServerTab(QWidget):
                 print(f"[AutoBackup] Cleanup error: {e}")
     
         def on_backup_error(msg):
-            self.label_status.setText("Status: Running")
+            self.label_status.setText("Running")
             QApplication.processEvents()
             QMessageBox.critical(self, "Backup Failed", msg)
     
@@ -1335,10 +1885,13 @@ class ServerTab(QWidget):
             self.server_pid = self.server_process.pid
 
             # Update UI
-            self.label_status.setText("Status: Running")
-            self.button_start.setText("Stop")
-            self.button_start.setStyleSheet("background-color: red; color: white;")
+            self.label_status.setText("Running")
+            self.apply_start_button(True)
             self.update_tab_color(is_running=True)
+            self._started_at = time.time()
+            self.label_availability.setText("Starting…")
+            self.set_players_label(unknown=True)
+            QTimer.singleShot(12000, self.poll_server_query)
 
             # Add dynamic firewall rules
             game_user_settings_ini_path = ini_path
@@ -1399,10 +1952,11 @@ class ServerTab(QWidget):
         )
     
         # Update GUI
-        self.label_status.setText("Status: Stopped")
-        self.button_start.setText("Start")
-        self.button_start.setStyleSheet("background-color: green; color: white;")
+        self.label_status.setText("Stopped")
+        self.apply_start_button(False)
         self.update_tab_color(is_running=False)
+        self._started_at = 0
+        self.set_query_offline()
         QApplication.processEvents()
     
         exe_name = "ArkAscendedServer.exe"
@@ -1579,6 +2133,7 @@ class ServerTab(QWidget):
         self.auto_start_time_edit.setTime(QTime(int(h), int(m)))
         
         self.checkbox_auto_start_update.setChecked(info.get("autostart_update", False))
+        self.set_players_label(0)
 
 # ---------------------------
 # 3) Main Window with Config + Auto-Save
@@ -1588,7 +2143,7 @@ class ArkServerManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Ark: Survival Ascended Server Manager")
-        self.resize(1200, 700)
+        self.resize(1240, 760)
         self.setWindowIcon(QIcon(self.resource_path("ark_icon.png")))
         self.config_manager = ConfigManager()
 
@@ -1601,48 +2156,10 @@ class ArkServerManager(QMainWindow):
         self._autosave_timer.setInterval(750)
         self._autosave_timer.timeout.connect(lambda: self.save_all_tabs(silent=True))
 
-        # Light styling
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #ebe7db;
-            }
-            QTabWidget::pane {
-                background: #f2eee4;
-                border: 1px solid #ccc;
-            }
-            QTabBar::tab {
-                background: #dcd8cc;
-                padding: 4px 8px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-                margin-right: 4px;
-            }
-            QTabBar::tab:selected {
-                background: #ffffff;
-                font-weight: bold;
-            }
-            QLabel {
-                font-size: 14px;
-            }
-            QLineEdit {
-                background-color: #ffffff;
-                border: 1px solid #ccc;
-                padding: 3px;
-            }
-            QPushButton {
-                background-color: #e0e0e0;
-                border: 1px solid #bfbfbf;
-                padding: 6px;
-                font-size: 12px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #d0d0d0;
-            }
-        """)
-
         # Tab widget
         self.tabs = QTabWidget()
+        self.tabs.setTabBar(StatusTabBar(self.tabs))
+        self.tabs.setDocumentMode(True)
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.setCentralWidget(self.tabs)
@@ -1652,26 +2169,11 @@ class ArkServerManager(QMainWindow):
         tab_bar.setExpanding(False)
         tab_bar.setElideMode(Qt.ElideNone)
         tab_bar.setUsesScrollButtons(True)
-        tab_bar.setMovable(True)  # Optional: allow dragging tabs
+        tab_bar.setMovable(True)
 
-        
-        self.tabs.setStyleSheet("""
-            QTabBar::tab {
-                padding: 4px 8px;
-                margin: 1px;
-                font-size: 10px;
-                max-width: 150px;  /* Optional: enforce width cap */
-            }
-            QTabBar::tab:selected {
-                font-weight: bold;
-            }
-        """)
-
-
-
-        # "+" button
         self.plus_button = QPushButton("+")
-        self.plus_button.setFixedWidth(30)
+        self.plus_button.setObjectName("plusButton")
+        self.plus_button.setFixedSize(32, 28)
         self.plus_button.clicked.connect(self.add_new_tab)
         self.tabs.setCornerWidget(self.plus_button, Qt.TopRightCorner)
 
@@ -2041,10 +2543,36 @@ class ArkServerManager(QMainWindow):
 # Main
 # ---------------------------
 
+def apply_dark_palette(app):
+    palette = QPalette()
+    window = QColor(APP_BG)
+    panel = QColor("#161c27")
+    text = QColor("#e8edf5")
+    muted = QColor("#c9d3e3")
+    accent = QColor("#e8a838")
+    palette.setColor(QPalette.Window, window)
+    palette.setColor(QPalette.WindowText, text)
+    palette.setColor(QPalette.Base, QColor("#171e2a"))
+    palette.setColor(QPalette.AlternateBase, panel)
+    palette.setColor(QPalette.ToolTipBase, panel)
+    palette.setColor(QPalette.ToolTipText, text)
+    palette.setColor(QPalette.Text, text)
+    palette.setColor(QPalette.Button, QColor("#222a38"))
+    palette.setColor(QPalette.ButtonText, text)
+    palette.setColor(QPalette.BrightText, QColor("#ffffff"))
+    palette.setColor(QPalette.Highlight, accent)
+    palette.setColor(QPalette.HighlightedText, QColor("#1a1408"))
+    if hasattr(QPalette, "PlaceholderText"):
+        palette.setColor(QPalette.PlaceholderText, muted)
+    palette.setColor(QPalette.Link, accent)
+    app.setPalette(palette)
+
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
-    # this makes the taskbar/Alt-Tab icon use your PNG too:
+    app.setStyle(QStyleFactory.create("Fusion"))
+    apply_dark_palette(app)
+    app.setStyleSheet(APP_STYLESHEET)
     app.setWindowIcon(QIcon("ark_icon.png"))
 
     window = ArkServerManager()
