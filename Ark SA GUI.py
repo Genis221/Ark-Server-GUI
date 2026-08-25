@@ -195,6 +195,34 @@ QGroupBox::title {
     color: #e8a838;
     background-color: #10141c;
 }
+QFrame#collapseSection {
+    background-color: #161c27;
+    border: 1px solid #2a3344;
+    border-radius: 12px;
+}
+QPushButton#collapseToggle {
+    background: transparent;
+    border: none;
+    color: #e8a838;
+    font-size: 13px;
+    font-weight: 700;
+    text-align: left;
+    padding: 10px 12px;
+    min-height: 20px;
+    min-width: 0;
+}
+QPushButton#collapseToggle:hover {
+    background-color: #1c2433;
+    border: none;
+    color: #f0ba55;
+}
+QPushButton#collapseToggle:pressed {
+    background-color: #1b2230;
+    border: none;
+}
+QWidget#collapseBody {
+    background: transparent;
+}
 QFrame#statCard {
     background-color: #161c27;
     border: 1px solid #2a3344;
@@ -263,6 +291,55 @@ QMessageBox {
     background-color: #161c27;
 }
 """
+
+
+class CollapsibleSection(QFrame):
+    """Click the header arrow to show or hide the section body."""
+
+    def __init__(self, title, parent=None, expanded=False):
+        super().__init__(parent)
+        self.setObjectName("collapseSection")
+        self._expanded = bool(expanded)
+        self._title = title
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self.toggle = QPushButton()
+        self.toggle.setObjectName("collapseToggle")
+        self.toggle.setCursor(Qt.PointingHandCursor)
+        self.toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.toggle.clicked.connect(self.toggle_expanded)
+        root.addWidget(self.toggle)
+
+        self.body = QWidget()
+        self.body.setObjectName("collapseBody")
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(12, 4, 12, 12)
+        self.body_layout.setSpacing(8)
+        root.addWidget(self.body)
+
+        self._refresh_header()
+        self.body.setVisible(self._expanded)
+
+    def _refresh_header(self):
+        arrow = "▼" if self._expanded else "▶"
+        self.toggle.setText(f"{arrow}  {self._title}")
+
+    def toggle_expanded(self):
+        self.set_expanded(not self._expanded)
+
+    def set_expanded(self, expanded):
+        self._expanded = bool(expanded)
+        self.body.setVisible(self._expanded)
+        self._refresh_header()
+
+    def add_layout(self, layout):
+        self.body_layout.addLayout(layout)
+
+    def add_widget(self, widget):
+        self.body_layout.addWidget(widget)
 
 
 class StatusTabBar(QTabBar):
@@ -1025,9 +1102,7 @@ class ServerTab(QWidget):
         #
     
         # --- Automatic Start ---
-        self.auto_start_group = QGroupBox("Automatic Start")
-        auto_start_layout = QVBoxLayout()
-        self.auto_start_group.setLayout(auto_start_layout)
+        self.auto_start_group = CollapsibleSection("Automatic Start", expanded=False)
     
         # Days of the week
         auto_days_layout = QHBoxLayout()
@@ -1036,11 +1111,11 @@ class ServerTab(QWidget):
             cb = QCheckBox(day)
             auto_days_layout.addWidget(cb)
             self.auto_start_days.append(cb)
-        auto_start_layout.addLayout(auto_days_layout)
+        self.auto_start_group.add_layout(auto_days_layout)
     
         # Start Time and optional update
         auto_time_layout = QHBoxLayout()
-        auto_time_layout.setAlignment(Qt.AlignLeft)  # shift everything left
+        auto_time_layout.setAlignment(Qt.AlignLeft)
         auto_time_layout.addWidget(QLabel("Start Server at:"))
     
         self.auto_start_time_edit = QTimeEdit()
@@ -1051,12 +1126,10 @@ class ServerTab(QWidget):
     
         self.checkbox_auto_start_update = QCheckBox("Perform update (Prior to Server Starting)")
         auto_time_layout.addWidget(self.checkbox_auto_start_update)
-        auto_start_layout.addLayout(auto_time_layout)
+        self.auto_start_group.add_layout(auto_time_layout)
 
         # --- Automatic Shutdown ---
-        self.scheduler_group = QGroupBox("Automatic Shutdown / Restart")
-        scheduler_layout = QVBoxLayout()
-        self.scheduler_group.setLayout(scheduler_layout)
+        self.scheduler_group = CollapsibleSection("Automatic Shutdown / Restart", expanded=False)
     
         days_layout = QHBoxLayout()
         self.shutdown_days = []
@@ -1064,10 +1137,10 @@ class ServerTab(QWidget):
             cb = QCheckBox(day)
             days_layout.addWidget(cb)
             self.shutdown_days.append(cb)
-        scheduler_layout.addLayout(days_layout)
+        self.scheduler_group.add_layout(days_layout)
     
         time_layout = QHBoxLayout()
-        time_layout.setAlignment(Qt.AlignLeft)  # shift everything left
+        time_layout.setAlignment(Qt.AlignLeft)
         time_layout.addWidget(QLabel("Shutdown at:"))
     
         self.shutdown_time_edit = QTimeEdit()
@@ -1081,7 +1154,7 @@ class ServerTab(QWidget):
         time_layout.addWidget(self.checkbox_perform_update)
         time_layout.addWidget(self.checkbox_then_restart)
     
-        scheduler_layout.addLayout(time_layout)
+        self.scheduler_group.add_layout(time_layout)
 
         schedule_row = QHBoxLayout()
         schedule_row.setSpacing(10)
@@ -1090,8 +1163,7 @@ class ServerTab(QWidget):
         self.scroll_layout.addLayout(schedule_row)
 
         # Row 6: Server Configuration
-        self.config_group = QGroupBox("Server Configuration")
-        self.config_group.setCheckable(False)
+        self.config_group = CollapsibleSection("Server Configuration", expanded=False)
 
         config_layout = QHBoxLayout()
         config_layout.setSpacing(10)
@@ -1099,7 +1171,7 @@ class ServerTab(QWidget):
         self.button_edit_gameusersettings_ini = QPushButton("Edit GameUserSettings.ini")
         config_layout.addWidget(self.button_edit_game_ini)
         config_layout.addWidget(self.button_edit_gameusersettings_ini)
-        self.config_group.setLayout(config_layout)
+        self.config_group.add_layout(config_layout)
     
         self.scroll_layout.addWidget(self.config_group)
     
@@ -1111,9 +1183,7 @@ class ServerTab(QWidget):
         )
         
         # Row 7: Automatic Backup
-        self.auto_backup_group = QGroupBox("Automatic World Save Backup")
-        auto_backup_layout = QVBoxLayout()
-        self.auto_backup_group.setLayout(auto_backup_layout)
+        self.auto_backup_group = CollapsibleSection("Automatic World Save Backup", expanded=False)
     
         backup_options = QHBoxLayout()
         backup_options.setAlignment(Qt.AlignLeft)
@@ -1131,7 +1201,7 @@ class ServerTab(QWidget):
         self.backup_limit_combo.setFixedWidth(100)
         backup_options.addWidget(self.backup_limit_combo)
         backup_options.addStretch()
-        auto_backup_layout.addLayout(backup_options)
+        self.auto_backup_group.add_layout(backup_options)
     
         # Backup Destination
         dest_layout = QHBoxLayout()
@@ -1140,7 +1210,7 @@ class ServerTab(QWidget):
         dest_layout.addWidget(self.edit_backup_dest)
         self.button_browse_backup_dest = QPushButton("Browse")
         dest_layout.addWidget(self.button_browse_backup_dest)
-        auto_backup_layout.addLayout(dest_layout)
+        self.auto_backup_group.add_layout(dest_layout)
         self.button_browse_backup_dest.clicked.connect(self.browse_backup_destination)
     
         backup_actions = QHBoxLayout()
@@ -1150,12 +1220,12 @@ class ServerTab(QWidget):
         backup_actions.addWidget(self.button_manual_backup)
         backup_actions.addWidget(self.checkbox_enable_backup)
         backup_actions.addStretch()
-        auto_backup_layout.addLayout(backup_actions)
+        self.auto_backup_group.add_layout(backup_actions)
     
         self.scroll_layout.addWidget(self.auto_backup_group)
 
-        log_group = QGroupBox("Logs")
-        log_layout = QGridLayout(log_group)
+        log_group = CollapsibleSection("Logs", expanded=False)
+        log_layout = QGridLayout()
         self.edit_log_location = QLineEdit("")
         self.button_browse_log = QPushButton("Browse")
         self.button_browse_log.clicked.connect(self.browse_log_location)
@@ -1168,6 +1238,7 @@ class ServerTab(QWidget):
         log_layout.addWidget(QLabel("Update Log Location"), 1, 0)
         log_layout.addWidget(self.edit_update_log_location, 1, 1)
         log_layout.addWidget(self.button_browse_update_log, 1, 2)
+        log_group.add_layout(log_layout)
         self.scroll_layout.addWidget(log_group)
     
         #
