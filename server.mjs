@@ -120,25 +120,46 @@ async function ensureDataDir() {
 
 async function loadState() {
   await ensureDataDir();
+  let loadedFromState = false;
   try {
     const raw = await readFile(STATE_FILE, "utf8");
     const parsed = JSON.parse(raw);
     const servers = Array.isArray(parsed.servers) ? parsed.servers.map((s, i) => makeServer({ ...s, order: s.order ?? i })) : [];
     state = { servers, activity: Array.isArray(parsed.activity) ? parsed.activity.slice(0, 100) : [] };
-    return;
+    loadedFromState = true;
   } catch {
     // fall through to legacy import
   }
 
-  try {
-    const raw = await readFile(LEGACY_CONFIG, "utf8");
-    const parsed = JSON.parse(raw);
-    const servers = Array.isArray(parsed.servers) ? parsed.servers.map(fromLegacy) : [];
-    state = { servers: servers.length ? servers : [makeServer()], activity: [{ time: nowIso(), message: "Imported desktop config.json", level: "info" }] };
-  } catch {
-    state = { servers: [makeServer()], activity: [] };
+  // Re-import desktop config.json when state is missing or still the empty default profile.
+  const needsLegacyImport = !loadedFromState || (
+    state.servers.length <= 1 &&
+    !String(state.servers[0]?.install || "").trim() &&
+    String(state.servers[0]?.profile || "").trim().toLowerCase() === "new server"
+  );
+
+  if (needsLegacyImport) {
+    try {
+      const raw = await readFile(LEGACY_CONFIG, "utf8");
+      const parsed = JSON.parse(raw);
+      const servers = Array.isArray(parsed.servers) ? parsed.servers.map(fromLegacy) : [];
+      if (servers.length) {
+        state = {
+          servers,
+          activity: [{ time: nowIso(), message: "Imported desktop config.json", level: "info" }]
+        };
+        await persistState(true);
+        return;
+      }
+    } catch {
+      // no legacy config
+    }
   }
-  await persistState(true);
+
+  if (!loadedFromState) {
+    state = { servers: [makeServer()], activity: [] };
+    await persistState(true);
+  }
 }
 
 function scheduleSave() {
@@ -892,32 +913,95 @@ async function terminatePid(pid) {
   try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
 }
 
-async function addFirewallRule(ruleName, protocol, port) {
-  try {
-    const { stdout } = await execFileAsync(
-      "netsh",
-      ["advfirewall", "firewall", "show", "rule", `name=${ruleName}`],
-      { windowsHide: true }
-    );
-    if (!stdout.includes("No rules match the specified criteria")) return true;
-  } catch {
-    // continue to add
+function runCaptured(command, args, timeoutMs = 30000) {
+  return new Promise(resolve => {
+    const child = spawn(command, args, {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let output = "";
+    let settled = false;
+    const finish = code => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code: Number(code) || 0, output });
+    };
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* ignore */ }
+      finish(1);
+    }, timeoutMs);
+    child.stdout.on("data", chunk => { output += chunk.toString("utf8"); });
+    child.stderr.on("data", chunk => { output += chunk.toString("utf8"); });
+    child.on("error", err => {
+      output += err.message || "";
+      finish(1);
+    });
+    child.on("close", code => finish(code));
+  });
+}
+
+function powershellSingleQuote(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+async function firewallRuleExists(ruleName) {
+  const result = await runCaptured(
+    "netsh",
+    ["advfirewall", "firewall", "show", "rule", `name=${ruleName}`],
+    10000
+  );
+  if (result.code !== 0) return false;
+  return !/No rules match the specified criteria/i.test(result.output);
+}
+
+async function addFirewallRuleDirect(ruleName, protocol, port) {
+  if (await firewallRuleExists(ruleName)) return true;
+  const result = await runCaptured(
+    "netsh",
+    [
+      "advfirewall", "firewall", "add", "rule",
+      `name=${ruleName}`,
+      "dir=in", "action=allow", `protocol=${protocol}`,
+      `localport=${port}`
+    ],
+    15000
+  );
+  return result.code === 0 && (await firewallRuleExists(ruleName));
+}
+
+async function addFirewallRulesElevated(rules) {
+  if (!rules.length) return true;
+  const lines = rules.map(rule => {
+    const name = powershellSingleQuote(rule.name);
+    const port = Number(rule.port);
+    return [
+      `$n=${name}`,
+      `$show = & netsh advfirewall firewall show rule name=$n 2>&1 | Out-String`,
+      `if ($LASTEXITCODE -ne 0 -or $show -match 'No rules match') {`,
+      `  & netsh advfirewall firewall add rule name=$n dir=in action=allow protocol=${rule.protocol} localport=${port} | Out-Null`,
+      `  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`,
+      `}`
+    ].join("; ");
+  });
+  const elevatedScript = `$ErrorActionPreference = 'Stop'; ${lines.join("; ")}; exit 0`;
+  const encodedScript = Buffer.from(elevatedScript, "utf16le").toString("base64");
+  const launcher = [
+    "$p = Start-Process -FilePath 'powershell.exe'",
+    "-ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand','" + encodedScript + "')",
+    "-Verb RunAs -WindowStyle Hidden -Wait -PassThru;",
+    "if ($null -eq $p) { exit 1 }; exit $p.ExitCode"
+  ].join(" ");
+  const result = await runCaptured(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", launcher],
+    120000
+  );
+  if (result.code !== 0) return false;
+  for (const rule of rules) {
+    if (!(await firewallRuleExists(rule.name))) return false;
   }
-  try {
-    await execFileAsync(
-      "netsh",
-      [
-        "advfirewall", "firewall", "add", "rule",
-        `name=${ruleName}`,
-        "dir=in", "action=allow", `protocol=${protocol}`,
-        `localport=${port}`
-      ],
-      { windowsHide: true }
-    );
-    return true;
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 async function ensureFirewall(server) {
@@ -931,15 +1015,52 @@ async function ensureFirewall(server) {
   if (queryPort) ports.push(queryPort);
   const rcon = await readRconPort(gusIniPath(server));
   if (rcon) ports.push(rcon);
-  let success = true;
+
+  const rules = [];
   for (const port of [...new Set(ports)]) {
-    for (const proto of ["TCP", "UDP"]) {
-      const ok = await addFirewallRule(`Ark Server: ${server.profile} ${proto} Port ${port}`, proto, port);
-      if (!ok) success = false;
+    for (const protocol of ["TCP", "UDP"]) {
+      rules.push({
+        name: `Ark Server: ${server.profile} ${protocol} Port ${port}`,
+        protocol,
+        port
+      });
     }
   }
-  server.firewallStatus = success ? "Good" : "Needs Admin";
+
+  const missing = [];
+  for (const rule of rules) {
+    if (!(await addFirewallRuleDirect(rule.name, rule.protocol, rule.port))) {
+      missing.push(rule);
+    }
+  }
+
+  if (!missing.length) {
+    server.firewallStatus = "Good";
+    scheduleSave();
+    return server.firewallStatus;
+  }
+
+  appendConsoleLog(
+    server.id,
+    "Firewall rules need administrator permission - approve the Windows UAC prompt…",
+    "system"
+  );
+  addActivity(`Requesting admin to add firewall rules for ${server.profile}`, "info");
+
+  const elevatedOk = await addFirewallRulesElevated(missing);
+  server.firewallStatus = elevatedOk ? "Good" : "Needs Admin";
   scheduleSave();
+  if (elevatedOk) {
+    appendConsoleLog(server.id, "Firewall rules added successfully.", "system");
+    addActivity(`Firewall rules added for ${server.profile}`, "success");
+  } else {
+    appendConsoleLog(
+      server.id,
+      "Firewall rules were not added (UAC denied or elevation failed). Server will still start.",
+      "error"
+    );
+    addActivity(`Firewall needs admin for ${server.profile}`, "error");
+  }
   return server.firewallStatus;
 }
 

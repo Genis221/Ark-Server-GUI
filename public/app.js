@@ -586,7 +586,7 @@ async function startServerWithFirewallPrompt(server) {
   });
   if (applyFirewall) {
     server.firewallAutoApproved = true;
-    toast("Firewall rules will auto-apply for this profile", "success");
+    toast("Approve the Windows admin prompt if it appears — firewall rules will auto-apply after that", "success");
   }
   return true;
 }
