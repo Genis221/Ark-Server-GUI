@@ -1005,6 +1005,20 @@ async function addFirewallRulesElevated(rules) {
   return true;
 }
 
+async function ensureManagerFirewallPort(port) {
+  if (process.platform !== "win32") return;
+  const ruleName = `Ark Server Manager TCP ${port}`;
+  if (await firewallRuleExists(ruleName)) return;
+  if (await addFirewallRuleDirect(ruleName, "TCP", port)) {
+    console.log(`Firewall rule added for manager TCP ${port}`);
+    return;
+  }
+  console.log(`Requesting admin to open manager firewall port ${port} (TCP)...`);
+  const ok = await addFirewallRulesElevated([{ name: ruleName, protocol: "TCP", port }]);
+  if (ok) console.log(`Firewall rule added for manager TCP ${port}`);
+  else console.warn(`Firewall rule for manager TCP ${port} was not added (UAC denied or failed)`);
+}
+
 async function ensureFirewall(server) {
   const mainPort = parseGamePort(server.launchArgs);
   if (!mainPort) {
@@ -1884,9 +1898,13 @@ async function main() {
     const localUrl = `http://127.0.0.1:${PORT}`;
     const lans = lanAddresses();
     console.log(`Ark Server Manager listening on ${HOST}:${PORT}`);
+    console.log(`  Port:   ${PORT}`);
     console.log(`  Local:  ${localUrl}`);
-    for (const ip of lans) console.log(`  LAN:    http://${ip}:${PORT}`);
-    if (!lans.length) console.log("  LAN:    (no IPv4 LAN address found)");
+    for (const ip of lans) console.log(`  Network: http://${ip}:${PORT}`);
+    if (!lans.length) console.log(`  Network: http://<this-pc-ip>:${PORT}`);
+    ensureManagerFirewallPort(PORT).catch(err => {
+      console.warn(`[firewall] Could not ensure manager port ${PORT}: ${err.message}`);
+    });
     if (!process.argv.includes("--no-open") && process.platform === "win32") {
       const openUrl = lans[0] ? `http://${lans[0]}:${PORT}` : localUrl;
       spawn("cmd", ["/c", "start", "", openUrl], { detached: true, stdio: "ignore" }).unref();

@@ -254,6 +254,50 @@ function Update-ArkManagerFromGit {
   }
 }
 
+function Ensure-ManagerFirewallPort {
+  param([int]$Port)
+
+  $ruleName = "Ark Server Manager TCP $Port"
+  $show = & netsh advfirewall firewall show rule name="$ruleName" 2>&1 | Out-String
+  if ($LASTEXITCODE -eq 0 -and $show -notmatch "No rules match") {
+    Write-Host "Firewall already allows Ark Manager port $Port (TCP)." -ForegroundColor DarkGray
+    return
+  }
+
+  Write-Host "Opening Windows Firewall for Ark Manager port $Port (TCP)..." -ForegroundColor Cyan
+  & netsh advfirewall firewall add rule name="$ruleName" dir=in action=allow protocol=TCP localport=$Port | Out-Null
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "Firewall rule added for TCP $Port." -ForegroundColor Green
+    return
+  }
+
+  Write-Host "Admin permission needed to open port $Port - approve the Windows UAC prompt..." -ForegroundColor Yellow
+  $elevated = @"
+`$ErrorActionPreference = 'Stop'
+`$name = '$ruleName'
+`$port = $Port
+`$show = & netsh advfirewall firewall show rule name=`$name 2>&1 | Out-String
+if (`$LASTEXITCODE -ne 0 -or `$show -match 'No rules match') {
+  & netsh advfirewall firewall add rule name=`$name dir=in action=allow protocol=TCP localport=`$port | Out-Null
+  exit `$LASTEXITCODE
+}
+exit 0
+"@
+  $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($elevated))
+  try {
+    $proc = Start-Process -FilePath "powershell.exe" `
+      -ArgumentList @("-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", $encoded) `
+      -Verb RunAs -WindowStyle Hidden -Wait -PassThru
+    if ($proc -and $proc.ExitCode -eq 0) {
+      Write-Host "Firewall rule added for TCP $Port." -ForegroundColor Green
+    } else {
+      Write-Host "Could not open firewall port $Port (UAC denied or failed). Other PCs may not reach the manager." -ForegroundColor Yellow
+    }
+  } catch {
+    Write-Host "Could not elevate for firewall port $Port : $($_.Exception.Message)" -ForegroundColor Yellow
+  }
+}
+
 Write-Host "Preparing Ark Server Manager..." -ForegroundColor Cyan
 if (-not (Ensure-Git)) {
   Write-Host "Git is missing. Auto-update will be unavailable until Git is installed." -ForegroundColor Yellow
@@ -269,14 +313,15 @@ if ($didUpdate) {
   Write-Host "Restarting manager with the updated files..." -ForegroundColor Cyan
 }
 Stop-ListenerOnPort -Port $Port
+Ensure-ManagerFirewallPort -Port $Port
 
 $lanIp = Get-LanIPv4
+Write-Host "Starting Ark Server Manager on port $Port..." -ForegroundColor Cyan
+Write-Host "  Local: http://127.0.0.1:$Port"
 if ($lanIp) {
-  Write-Host "Starting Ark Server Manager..." -ForegroundColor Cyan
-  Write-Host "  Local: http://127.0.0.1:$Port"
-  Write-Host "  LAN:   http://${lanIp}:$Port"
+  Write-Host "  Network: http://${lanIp}:$Port"
 } else {
-  Write-Host "Starting Ark Server Manager at http://127.0.0.1:$Port ..." -ForegroundColor Cyan
+  Write-Host "  Network: http://<this-pc-ip>:$Port"
 }
 
 Set-Location $projectRoot
