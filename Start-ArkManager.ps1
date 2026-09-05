@@ -10,6 +10,7 @@ $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $env:ARK_PORT = "$Port"
 $env:ARK_HOST = $HostAddress
 if (-not $env:ARK_ALLOW_REMOTE) { $env:ARK_ALLOW_REMOTE = "true" }
+if (-not $env:ARK_ALLOW_PUBLIC) { $env:ARK_ALLOW_PUBLIC = "true" }
 
 $PublicRepoUrl = "https://github.com/Genis221/Ark-Server-GUI.git"
 

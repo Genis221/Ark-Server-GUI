@@ -705,8 +705,8 @@ document.getElementById("btn-info").addEventListener("click", () => {
   const p = infoDialog.querySelector(".muted");
   if (p) {
     p.textContent = lans.length
-      ? `LAN: ${lans.join(" · ")}`
-      : "Reachable on this PC and your LAN IP (port 3220).";
+      ? `Any IP can connect. Examples: ${lans.join(" · ")}`
+      : "Listening on all interfaces (0.0.0.0). Use this PC's IP and port 3220 from other devices.";
   }
   infoDialog.showModal();
 });

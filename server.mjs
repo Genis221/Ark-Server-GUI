@@ -33,6 +33,7 @@ const LEGACY_CONFIG = path.join(ROOT, "config.json");
 const PORT = Number(process.env.ARK_PORT || process.env.PORT || 3220);
 const HOST = process.env.ARK_HOST || "0.0.0.0";
 const ALLOW_REMOTE = process.env.ARK_ALLOW_REMOTE !== "false";
+const ALLOW_PUBLIC = process.env.ARK_ALLOW_PUBLIC !== "false";
 const MAX_BODY = 4 * 1024 * 1024;
 const STEAM_APP_ID = "2430930";
 const STEAMCMD_URL = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip";
@@ -1636,8 +1637,8 @@ async function handleApi(req, res, url) {
   if (!ALLOW_REMOTE && !isLoopbackRequest(req)) {
     return sendJson(res, 403, { error: "Remote access is disabled. Set ARK_ALLOW_REMOTE=true to enable." });
   }
-  if (ALLOW_REMOTE && !isLoopbackRequest(req) && !isPrivateLanAddress(remote) && process.env.ARK_ALLOW_PUBLIC !== "true") {
-    return sendJson(res, 403, { error: "Only loopback/LAN clients are allowed. Set ARK_ALLOW_PUBLIC=true to override." });
+  if (ALLOW_REMOTE && !ALLOW_PUBLIC && !isLoopbackRequest(req) && !isPrivateLanAddress(remote)) {
+    return sendJson(res, 403, { error: "Only loopback/LAN clients are allowed. Set ARK_ALLOW_PUBLIC=true to allow all IPs." });
   }
 
   const { pathname } = url;
