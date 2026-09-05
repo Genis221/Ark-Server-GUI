@@ -10,6 +10,7 @@ const state = {
   pendingPatches: new Map(),
   openSections: new Set(),
   busy: new Set(),
+  repairPrompted: new Set(),
   consoleSource: null,
   consoleServerId: null
 };
@@ -20,6 +21,8 @@ const toastStack = document.getElementById("toast-stack");
 const infoDialog = document.getElementById("info-dialog");
 const copyDialog = document.getElementById("copy-dialog");
 const confirmDialog = document.getElementById("confirm-dialog");
+const firewallDialog = document.getElementById("firewall-dialog");
+const repairDialog = document.getElementById("repair-dialog");
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -81,10 +84,15 @@ function statusClass(server) {
   return "stopped";
 }
 
-function titleCaseStatus(value) {
-  const text = String(value || "Stopped");
-  if (text.toLowerCase() === "starting…") return "Starting…";
-  return text.charAt(0).toUpperCase() + text.slice(1);
+function statusDisplay(server) {
+  const status = String(server?.status || "").toLowerCase();
+  const availability = String(server?.availability || "").toLowerCase();
+  if (status === "updating") return { label: "Updating", tone: "warn" };
+  if (availability.includes("start") || status.includes("start")) {
+    return { label: "Starting…", tone: "warn" };
+  }
+  if (status === "running") return { label: "Running", tone: "good" };
+  return { label: "Offline", tone: "bad" };
 }
 
 function availabilityClass(value) {
@@ -189,6 +197,7 @@ function renderServer(server) {
   const updating = String(server.status).toLowerCase() === "updating";
   const busy = state.busy.has(server.id) || updating;
   const open = key => state.openSections.has(`${server.id}:${key}`) ? "open" : "";
+  const statusUi = statusDisplay(server);
 
   workspace.innerHTML = `
     <div class="server-page" data-server-id="${server.id}">
@@ -236,15 +245,15 @@ function renderServer(server) {
           </label>
 
           <div class="stats">
-            <article class="stat-card ${running || updating ? "good" : "bad"}">
+            <article class="stat-card ${statusUi.tone}">
               <span>Status</span>
-              <strong>${escapeHtml(titleCaseStatus(server.status))}</strong>
+              <strong>${escapeHtml(statusUi.label)}</strong>
             </article>
             <article class="stat-card ${availabilityClass(server.availability)}">
               <span>Availability</span>
               <strong>${escapeHtml(server.availability || "Offline")}</strong>
             </article>
-            <article class="stat-card">
+            <article class="stat-card ${Number(server.players) > 0 ? "good" : ""}">
               <span>Players</span>
               <strong>${Number(server.players) || 0} / ${Number(server.maxPlayers) || 70}</strong>
             </article>
@@ -283,11 +292,10 @@ function renderServer(server) {
           <section class="section ${open("config")}" data-section="config">
             <button type="button" class="section-toggle"><span class="chev">▶</span> Server Configuration</button>
             <div class="section-body">
-              <div class="action-row">
-                <button type="button" class="btn secondary" data-action="open-game-ini">Edit Game.ini</button>
-                <button type="button" class="btn secondary" data-action="open-gus-ini">Edit GameUserSettings.ini</button>
-                <button type="button" class="btn secondary" data-action="firewall">Apply Firewall Rules</button>
-              </div>
+            <div class="action-row">
+              <button type="button" class="btn secondary" data-action="open-game-ini">Edit Game.ini</button>
+              <button type="button" class="btn secondary" data-action="open-gus-ini">Edit GameUserSettings.ini</button>
+            </div>
             </div>
           </section>
 
@@ -433,23 +441,92 @@ async function refreshState({ silent = false } = {}) {
   }
 }
 
+function setStatTone(card, tone) {
+  if (!card) return;
+  card.classList.remove("good", "warn", "bad");
+  if (tone) card.classList.add(tone);
+}
+
 function updateLiveStats(server) {
   if (!server) return;
   const page = workspace.querySelector(`[data-server-id="${server.id}"]`);
   if (!page) return;
-  const cards = page.querySelectorAll(".stat-card strong");
-  if (cards[0]) cards[0].textContent = titleCaseStatus(server.status);
-  if (cards[1]) cards[1].textContent = server.availability || "Offline";
-  if (cards[2]) cards[2].textContent = `${Number(server.players) || 0} / ${Number(server.maxPlayers) || 70}`;
-  if (cards[3]) cards[3].textContent = server.firewallStatus || "Not Checked";
+  const cards = [...page.querySelectorAll(".stats .stat-card")];
+  const updating = String(server.status).toLowerCase() === "updating";
+  const busy = state.busy.has(server.id) || updating;
+  const running = String(server.status).toLowerCase() === "running";
+  const playerCount = Number(server.players) || 0;
+  const statusUi = statusDisplay(server);
+
+  if (cards[0]) {
+    const strong = cards[0].querySelector("strong");
+    if (strong) strong.textContent = statusUi.label;
+    setStatTone(cards[0], statusUi.tone);
+  }
+  if (cards[1]) {
+    const strong = cards[1].querySelector("strong");
+    if (strong) strong.textContent = server.availability || "Offline";
+    setStatTone(cards[1], availabilityClass(server.availability));
+  }
+  if (cards[2]) {
+    const strong = cards[2].querySelector("strong");
+    if (strong) strong.textContent = `${playerCount} / ${Number(server.maxPlayers) || 70}`;
+    setStatTone(cards[2], playerCount > 0 ? "good" : "");
+  }
+  if (cards[3]) {
+    const strong = cards[3].querySelector("strong");
+    if (strong) strong.textContent = server.firewallStatus || "Not Checked";
+    setStatTone(cards[3], firewallClass(server.firewallStatus));
+  }
+
   const toggle = page.querySelector("[data-action='toggle']");
   if (toggle) {
-    const running = String(server.status).toLowerCase() === "running";
     toggle.textContent = running ? "Stop" : "Start";
     toggle.classList.toggle("stop", running);
     toggle.classList.toggle("start", !running);
+    toggle.disabled = busy;
   }
+  const updateBtn = page.querySelector("[data-action='update']");
+  if (updateBtn) updateBtn.disabled = busy;
   renderTabs();
+  maybePromptRepair(server);
+}
+
+async function askRepairConsent(server) {
+  return new Promise(resolve => {
+    const message = document.getElementById("repair-message");
+    if (message) {
+      message.textContent =
+        `SteamCMD reported app state 0x6 for "${server.profile}". This usually means a stuck or corrupt install. Repair will delete everything under the install folder except ShooterGame\\Saved (worlds and configs), then redownload the server.`;
+    }
+    repairDialog.showModal();
+    const onOk = () => { cleanup(); resolve(true); };
+    const onCancel = () => { cleanup(); resolve(false); };
+    function cleanup() {
+      repairDialog.close();
+      document.getElementById("repair-ok").removeEventListener("click", onOk);
+      document.getElementById("repair-cancel").removeEventListener("click", onCancel);
+    }
+    document.getElementById("repair-ok").addEventListener("click", onOk);
+    document.getElementById("repair-cancel").addEventListener("click", onCancel);
+  });
+}
+
+async function maybePromptRepair(server) {
+  if (!server) return;
+  if (!server.needsRepair || server.updating) {
+    if (!server.needsRepair) state.repairPrompted.delete(server.id);
+    return;
+  }
+  if (state.repairPrompted.has(server.id) || repairDialog?.open) return;
+  state.repairPrompted.add(server.id);
+  const ok = await askRepairConsent(server);
+  if (!ok) return;
+  state.repairPrompted.delete(server.id);
+  toast("Repair & redownload started — watch the Console", "success");
+  connectConsole(server.id);
+  await api(`/api/servers/${server.id}/update`, { method: "POST", body: { repair: true } });
+  await refreshState({ silent: true });
 }
 
 async function confirmDelete(server) {
@@ -468,6 +545,50 @@ async function confirmDelete(server) {
     document.getElementById("confirm-ok").addEventListener("click", onOk);
     document.getElementById("confirm-cancel").addEventListener("click", onCancel);
   });
+}
+
+async function askFirewallConsent(server) {
+  return new Promise(resolve => {
+    const message = document.getElementById("firewall-message");
+    if (message) {
+      message.textContent =
+        `Allow Ark Manager to add Windows firewall rules for "${server.profile}" (game, query, and RCON ports) when this server starts? Choose "Allow & start" once and you will not be asked again for this profile. "Start without firewall" or "Cancel start" will ask again next time.`;
+    }
+    firewallDialog.showModal();
+    const onAllow = () => { cleanup(); resolve("allow"); };
+    const onSkip = () => { cleanup(); resolve("skip"); };
+    const onCancel = () => { cleanup(); resolve("cancel"); };
+    function cleanup() {
+      firewallDialog.close();
+      document.getElementById("firewall-allow").removeEventListener("click", onAllow);
+      document.getElementById("firewall-skip").removeEventListener("click", onSkip);
+      document.getElementById("firewall-cancel").removeEventListener("click", onCancel);
+    }
+    document.getElementById("firewall-allow").addEventListener("click", onAllow);
+    document.getElementById("firewall-skip").addEventListener("click", onSkip);
+    document.getElementById("firewall-cancel").addEventListener("click", onCancel);
+  });
+}
+
+async function startServerWithFirewallPrompt(server) {
+  let applyFirewall = Boolean(server.firewallAutoApproved);
+  if (!applyFirewall) {
+    const choice = await askFirewallConsent(server);
+    if (choice === "cancel") return false;
+    applyFirewall = choice === "allow";
+    // skip / allow both leave approved only when allow — skip asks again next start
+  }
+  await withBusy(server.id, async () => {
+    await api(`/api/servers/${server.id}/start`, {
+      method: "POST",
+      body: { applyFirewall }
+    });
+  });
+  if (applyFirewall) {
+    server.firewallAutoApproved = true;
+    toast("Firewall rules will auto-apply for this profile", "success");
+  }
+  return true;
 }
 
 async function withBusy(id, fn) {
@@ -653,18 +774,20 @@ workspace.addEventListener("click", async event => {
 
   try {
     if (action === "toggle") {
-      await withBusy(server.id, async () => {
-        if (String(server.status).toLowerCase() === "running") {
+      if (String(server.status).toLowerCase() === "running") {
+        await withBusy(server.id, async () => {
           await api(`/api/servers/${server.id}/stop`, { method: "POST" });
           toast(`Stopped ${server.profile}`);
-        } else {
-          await api(`/api/servers/${server.id}/start`, { method: "POST" });
-          toast(`Started ${server.profile}`, "success");
-        }
-      });
+        });
+      } else {
+        const started = await startServerWithFirewallPrompt(server);
+        if (started) toast(`Started ${server.profile}`, "success");
+      }
     } else if (action === "update") {
-      await api(`/api/servers/${server.id}/update`, { method: "POST" });
-      toast("SteamCMD update started in a console window", "success");
+      state.repairPrompted.delete(server.id);
+      await api(`/api/servers/${server.id}/update`, { method: "POST", body: {} });
+      toast("Update / Verify started — watch the Console panel", "success");
+      connectConsole(server.id);
       await refreshState({ silent: true });
     } else if (action === "download-steamcmd") {
       toast("Downloading SteamCMD…");
@@ -677,10 +800,6 @@ workspace.addEventListener("click", async event => {
         await api(`/api/servers/${server.id}/backup`, { method: "POST" });
         toast("Backup complete", "success");
       });
-    } else if (action === "firewall") {
-      await api(`/api/servers/${server.id}/firewall`, { method: "POST" });
-      toast("Firewall rules applied", "success");
-      await refreshState();
     } else if (action === "open-game-ini") {
       await api(`/api/servers/${server.id}/open-ini`, { method: "POST", body: { kind: "game" } });
       toast("Opened Game.ini");
@@ -760,4 +879,5 @@ workspace.addEventListener("input", event => {
 });
 
 await refreshState();
+state.busy.clear();
 state.pollTimer = setInterval(() => refreshState({ silent: true }), 2000);

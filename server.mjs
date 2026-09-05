@@ -104,6 +104,7 @@ function makeServer(partial = {}) {
     logLocation: String(partial.log_location ?? partial.logLocation ?? "").trim(),
     updateLogLocation: String(partial.update_log_location ?? partial.updateLogLocation ?? "").trim(),
     firewallStatus: String(partial.firewallStatus || "Not Checked"),
+    firewallAutoApproved: Boolean(partial.firewallAutoApproved),
     lastBackupAt: partial.lastBackupAt || null,
     order: Number.isFinite(Number(partial.order)) ? Number(partial.order) : 0
   };
@@ -175,6 +176,7 @@ function runtimeOf(id) {
       pid: null,
       startedAt: 0,
       updating: false,
+      needsRepair: false,
       backupInProgress: false,
       autoStartTriggeredDate: "",
       shutdownTriggeredDate: "",
@@ -288,20 +290,22 @@ function publicServer(server, rcon = null) {
     autostartDays, autostartTime, autostartUpdate,
     shutdownDays, shutdownTime, performUpdate, thenRestart,
     autoBackupEnabled, autoBackupInterval, autoBackupDest, backupLimit,
-    logLocation, updateLogLocation, firewallStatus, lastBackupAt, order
+    logLocation, updateLogLocation, firewallStatus, firewallAutoApproved, lastBackupAt, order
   } = server;
   return {
     id, profile, install, steamcmd, version, launchArgs,
     autostartDays, autostartTime, autostartUpdate,
     shutdownDays, shutdownTime, performUpdate, thenRestart,
     autoBackupEnabled, autoBackupInterval, autoBackupDest, backupLimit,
-    logLocation, updateLogLocation, firewallStatus, lastBackupAt, order,
+    logLocation, updateLogLocation, firewallStatus, firewallAutoApproved, lastBackupAt, order,
     status: runtime.updating ? "Updating" : runtime.status,
     availability: runtime.availability,
     players: runtime.players,
     maxPlayers: runtime.maxPlayers || parseMaxPlayers(server.launchArgs),
     pid: runtime.pid,
     backupInProgress: Boolean(runtime.backupInProgress),
+    updating: Boolean(runtime.updating),
+    needsRepair: Boolean(runtime.needsRepair),
     startedAt: runtime.startedAt || null,
     rcon
   };
@@ -783,6 +787,26 @@ async function findProcessForInstall(install, procs = null) {
   return list.find(p => path.normalize(p.exe || "").toLowerCase().includes(target)) || null;
 }
 
+function countPlayersFromListPlayers(text) {
+  const raw = String(text || "").trim();
+  if (!raw || /no players/i.test(raw)) return 0;
+  const lines = raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const numbered = lines.filter(line => /^\d+\./.test(line));
+  if (numbered.length) return numbered.length;
+  return lines.filter(line => !/^(listplayers|players on server)/i.test(line)).length;
+}
+
+async function queryPlayerCountViaRcon(server) {
+  try {
+    const settings = await readRconSettings(gusIniPath(server));
+    if (!settings.enabled || !settings.password) return null;
+    const reply = await rconExec("127.0.0.1", settings.port, settings.password, "ListPlayers", 3500);
+    return countPlayersFromListPlayers(reply);
+  } catch {
+    return null;
+  }
+}
+
 async function refreshRuntime(server, { deep = false, procs = null } = {}) {
   const runtime = runtimeOf(server.id);
   if (runtime.updating) {
@@ -812,6 +836,12 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
       runtime.players = Number(info.players) || 0;
       runtime.maxPlayers = Number(info.max_players) || runtime.maxPlayers;
       return;
+    }
+
+    // ASA often ignores A2S — fall back to RCON ListPlayers for live counts.
+    const rconPlayers = await queryPlayerCountViaRcon(server);
+    if (rconPlayers != null) {
+      runtime.players = rconPlayers;
     }
 
     const ready = await detectReadyFromLogs(server.install);
@@ -925,7 +955,7 @@ async function copyServerLogOnStop(server) {
   await copyFile(src, dest);
 }
 
-async function startServer(server) {
+async function startServer(server, { applyFirewall = false } = {}) {
   const runtime = runtimeOf(server.id);
   if (runtime.status === "running" || runtime.updating) {
     throw Object.assign(new Error("Server is already running or updating"), { status: 409 });
@@ -947,7 +977,12 @@ async function startServer(server) {
   await mkdir(path.dirname(gusIniPath(server)), { recursive: true });
   await updateSessionName(gusIniPath(server), server.profile);
 
-  if (server.firewallStatus !== "Good") {
+  const shouldApplyFirewall = Boolean(server.firewallAutoApproved || applyFirewall);
+  if (shouldApplyFirewall) {
+    if (applyFirewall && !server.firewallAutoApproved) {
+      server.firewallAutoApproved = true;
+      scheduleSave();
+    }
     await ensureFirewall(server);
   }
 
@@ -1037,22 +1072,72 @@ async function downloadSteamCmd(destDir) {
   return target;
 }
 
-function runSteamUpdate(server, { onComplete } = {}) {
-  const runtime = runtimeOf(server.id);
-  const steamcmdExe = path.join(server.steamcmd, "steamcmd.exe");
-  return new Promise(async (resolve, reject) => {
-    if (!(await pathExists(steamcmdExe))) {
-      return reject(Object.assign(new Error("SteamCMD.exe was not found"), { status: 400 }));
-    }
-    if (!server.install) {
-      return reject(Object.assign(new Error("Install location is not set"), { status: 400 }));
-    }
-    await mkdir(server.install, { recursive: true });
+function appManifestCandidates(install) {
+  return [
+    path.join(install, "steamapps", `appmanifest_${STEAM_APP_ID}.acf`),
+    path.join(install, "..", `appmanifest_${STEAM_APP_ID}.acf`),
+    path.join(install, "..", "..", "steamapps", `appmanifest_${STEAM_APP_ID}.acf`)
+  ];
+}
 
-    runtime.updating = true;
-    runtime.status = "Updating";
-    runtime.availability = "Offline";
-    addActivity(`Updating ${server.profile} via SteamCMD`, "info");
+async function clearStuckSteamState(server) {
+  const removed = [];
+  for (const file of appManifestCandidates(server.install)) {
+    if (await pathExists(file)) {
+      await rm(file, { force: true });
+      removed.push(file);
+      appendConsoleLog(server.id, `Removed stuck Steam manifest: ${file}`, "system");
+    }
+  }
+  const downloading = path.join(server.install, "..", "downloading");
+  if (await pathExists(downloading)) {
+    try {
+      await rm(downloading, { recursive: true, force: true });
+      removed.push(downloading);
+      appendConsoleLog(server.id, `Cleared steamapps/downloading cache`, "system");
+    } catch (err) {
+      appendConsoleLog(server.id, `Could not clear downloading folder: ${err.message}`, "error");
+    }
+  }
+  return removed;
+}
+
+async function wipeInstallKeepSaved(server) {
+  const install = server.install;
+  if (!install || !(await pathExists(install))) {
+    throw Object.assign(new Error("Install location is missing"), { status: 400 });
+  }
+  appendConsoleLog(server.id, "Repair mode: wiping server files but keeping ShooterGame\\Saved (worlds/configs)…", "system");
+  const entries = await readdir(install, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = path.join(install, entry.name);
+    if (entry.name.toLowerCase() === "shootergame") {
+      const inner = await readdir(full, { withFileTypes: true });
+      for (const child of inner) {
+        if (child.name.toLowerCase() === "saved") {
+          appendConsoleLog(server.id, `Keeping ${path.join("ShooterGame", child.name)}`, "system");
+          continue;
+        }
+        await rm(path.join(full, child.name), { recursive: true, force: true });
+        appendConsoleLog(server.id, `Removed ShooterGame\\${child.name}`, "system");
+      }
+      continue;
+    }
+    await rm(full, { recursive: true, force: true });
+    appendConsoleLog(server.id, `Removed ${entry.name}`, "system");
+  }
+  await clearStuckSteamState(server);
+}
+
+function spawnSteamCmdUpdate(server, steamcmdExe) {
+  return new Promise(async (resolve) => {
+    const args = [
+      "+force_install_dir", server.install,
+      "+login", "anonymous",
+      "+app_update", STEAM_APP_ID, "validate",
+      "+quit"
+    ];
+    appendConsoleLog(server.id, `> steamcmd ${args.join(" ")}`, "command");
 
     const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 15);
     const profileClean = server.profile.replace(/[\\/]/g, "-");
@@ -1060,86 +1145,138 @@ function runSteamUpdate(server, { onComplete } = {}) {
     const updateLogFolder = path.join(logBase, profileClean, `${server.profile} Update Logs`);
     await mkdir(updateLogFolder, { recursive: true });
     const logFile = path.join(updateLogFolder, `${server.profile} update log ${stamp}.log`);
-    const batPath = path.join(os.tmpdir(), `ark_update_${profileClean}_${stamp}.bat`);
+    const logStream = createWriteStream(logFile, { flags: "a" });
 
-    const bat = [
-      "@echo off",
-      `title Updating ${server.profile} Server`,
-      "echo ==============================================",
-      `echo Updating ${server.profile} Server`,
-      `echo Server Path: ${server.install}`,
-      "echo ==============================================",
-      "echo.",
-      "echo [1/2] Running SteamCMD bootstrap...",
-      `"${steamcmdExe}" +quit`,
-      "echo.",
-      "echo [2/2] Installing / Updating ARK Survival Ascended Dedicated Server...",
-      `"${steamcmdExe}" +force_install_dir "${server.install}" +login anonymous +app_update ${STEAM_APP_ID} validate +quit`,
-      `echo Exit code: %ERRORLEVEL%>> "${logFile}"`,
-      "exit /b %ERRORLEVEL%"
-    ].join("\r\n");
-    await writeFile(batPath, bat, "utf8");
-
-    const child = spawn("cmd.exe", ["/c", batPath], {
-      windowsHide: false,
-      stdio: "ignore",
-      detached: true
+    let output = "";
+    let stdoutBuf = "";
+    let stderrBuf = "";
+    const child = spawn(steamcmdExe, args, {
+      cwd: path.dirname(steamcmdExe),
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
     });
-    child.unref();
 
-    const poll = setInterval(async () => {
-      // Detect completion when steamcmd is not holding the update and process is gone.
-      // Use a soft timeout window: check for steamcmd.exe related to this install is hard,
-      // so we watch for bat completion by checking if steamcmd is running + bat still exists.
-    }, 5000);
-
-    // Poll for steamcmd exit by checking for a marker: re-run version read after delay
-    // Better: spawn without detached and wait — but user wants visible console like desktop.
-    // Track via watching steamcmd process count dropping after start.
-    let started = false;
-    const watcher = setInterval(async () => {
-      try {
-        const { stdout } = await execFileAsync(
-          "powershell.exe",
-          ["-NoProfile", "-Command", "(Get-Process steamcmd -ErrorAction SilentlyContinue | Measure-Object).Count"],
-          { windowsHide: true }
-        );
-        const count = Number(String(stdout).trim()) || 0;
-        if (count > 0) started = true;
-        if (started && count === 0) {
-          clearInterval(watcher);
-          clearInterval(poll);
-          runtime.updating = false;
-          try {
-            const version = await getArkVersionFromLogs(server.install);
-            if (version && version !== "Unknown") {
-              server.version = version;
-              scheduleSave();
-            }
-          } catch { /* ignore */ }
-          addActivity(`Update finished for ${server.profile}`, "success");
-          await refreshRuntime(server, { deep: true });
-          resolve(publicServer(server));
-          if (typeof onComplete === "function") {
-            try { await onComplete(); } catch (err) { addActivity(err.message, "error"); }
-          }
-        }
-      } catch {
-        // keep waiting
+    const flushLines = (raw, level, isFinal = false) => {
+      const text = raw.toString("utf8");
+      output += text;
+      try { logStream.write(text); } catch { /* ignore */ }
+      const combined = (level === "error" ? stderrBuf : stdoutBuf) + text;
+      const parts = combined.split(/\r?\n|\r/);
+      const remainder = isFinal ? "" : (parts.pop() || "");
+      if (level === "error") stderrBuf = remainder;
+      else stdoutBuf = remainder;
+      for (const line of parts) {
+        const cleaned = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
+        if (cleaned) appendConsoleLog(server.id, cleaned, level);
       }
-    }, 4000);
-
-    // Safety timeout 2 hours
-    setTimeout(() => {
-      clearInterval(watcher);
-      clearInterval(poll);
-      if (runtime.updating) {
-        runtime.updating = false;
-        addActivity(`Update watch timed out for ${server.profile}`, "error");
-        resolve(publicServer(server));
+      if (isFinal && remainder.trim()) {
+        appendConsoleLog(server.id, remainder.replace(/\x1b\[[0-9;]*m/g, "").trim(), level);
       }
-    }, 2 * 60 * 60 * 1000);
+    };
+
+    child.stdout.on("data", chunk => flushLines(chunk, "log"));
+    child.stderr.on("data", chunk => flushLines(chunk, "error"));
+    child.on("error", err => {
+      try { logStream.end(); } catch { /* ignore */ }
+      appendConsoleLog(server.id, `SteamCMD failed to start: ${err.message}`, "error");
+      resolve({ code: 1, output, error: err.message });
+    });
+    child.on("close", code => {
+      flushLines("", "log", true);
+      flushLines("", "error", true);
+      try { logStream.end(); } catch { /* ignore */ }
+      resolve({ code: Number(code) || 0, output });
+    });
   });
+}
+
+async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
+  const runtime = runtimeOf(server.id);
+  const steamcmdExe = path.join(server.steamcmd, "steamcmd.exe");
+  if (!(await pathExists(steamcmdExe))) {
+    throw Object.assign(new Error("SteamCMD.exe was not found"), { status: 400 });
+  }
+  if (!server.install) {
+    throw Object.assign(new Error("Install location is not set"), { status: 400 });
+  }
+  if (runtime.updating) {
+    throw Object.assign(new Error("An update is already running for this server"), { status: 409 });
+  }
+
+  runtime.updating = true;
+  runtime.status = "Updating";
+  runtime.availability = "Offline";
+  runtime.needsRepair = false;
+  addActivity(`Updating ${server.profile} via SteamCMD`, "info");
+  appendConsoleLog(server.id, `=== Update / Verify started for ${server.profile} ===`, "system");
+
+  try {
+    // SteamCMD 0x6 is often caused by locked files or a stuck appmanifest.
+    const running = await findProcessForInstall(server.install);
+    if (running) {
+      appendConsoleLog(server.id, "Server is running — stopping it before update…", "system");
+      await stopServer(server, { copyLog: false });
+    }
+
+    await mkdir(server.install, { recursive: true });
+
+    if (repair) {
+      await wipeInstallKeepSaved(server);
+    }
+
+    appendConsoleLog(server.id, "Bootstrapping SteamCMD…", "system");
+    try {
+      await execFileAsync(steamcmdExe, ["+quit"], {
+        cwd: path.dirname(steamcmdExe),
+        windowsHide: true,
+        timeout: 120000
+      });
+    } catch {
+      // bootstrap may exit non-zero
+    }
+
+    let result = await spawnSteamCmdUpdate(server, steamcmdExe);
+    let hit06 = /state is 0x6/i.test(result.output);
+
+    if (hit06 && !repair) {
+      appendConsoleLog(server.id, "Detected SteamCMD 0x6 — clearing stuck manifest and retrying once…", "system");
+      await clearStuckSteamState(server);
+      result = await spawnSteamCmdUpdate(server, steamcmdExe);
+      hit06 = /state is 0x6/i.test(result.output);
+    }
+
+    if (hit06) {
+      runtime.needsRepair = true;
+      appendConsoleLog(
+        server.id,
+        "SteamCMD 0x6 persisted. This usually means a corrupted install/manifest or content server issue. Use Repair & Redownload to wipe everything except ShooterGame\\Saved, then download fresh.",
+        "error"
+      );
+      addActivity(`Update hit 0x6 for ${server.profile} — repair recommended`, "error");
+    } else if (result.code === 0) {
+      appendConsoleLog(server.id, "Update / Verify finished successfully.", "system");
+      addActivity(`Update finished for ${server.profile}`, "success");
+      try {
+        const version = await getArkVersionFromLogs(server.install);
+        if (version && version !== "Unknown") {
+          server.version = version;
+          scheduleSave();
+        }
+      } catch { /* ignore */ }
+    } else {
+      appendConsoleLog(server.id, `SteamCMD exited with code ${result.code}`, "error");
+      addActivity(`Update finished with errors for ${server.profile}`, "error");
+    }
+
+    await refreshRuntime(server, { deep: true });
+    const payload = { ...publicServer(server), needsRepair: Boolean(runtime.needsRepair), updateExitCode: result.code };
+    if (typeof onComplete === "function" && !hit06 && result.code === 0) {
+      try { await onComplete(); } catch (err) { addActivity(err.message, "error"); }
+    }
+    return payload;
+  } finally {
+    runtime.updating = false;
+  }
 }
 
 async function zipDirectory(sourceDir, zipPath) {
@@ -1459,7 +1596,7 @@ async function handleApi(req, res, url) {
       "profile", "install", "steamcmd", "version", "launchArgs",
       "autostartTime", "autostartUpdate", "shutdownTime", "performUpdate", "thenRestart",
       "autoBackupEnabled", "autoBackupInterval", "autoBackupDest", "backupLimit",
-      "logLocation", "updateLogLocation", "firewallStatus"
+      "logLocation", "updateLogLocation", "firewallStatus", "firewallAutoApproved"
     ];
     for (const key of fields) {
       if (body[key] !== undefined) server[key] = body[key];
@@ -1486,7 +1623,10 @@ async function handleApi(req, res, url) {
   }
 
   if (method === "POST" && action === "start") {
-    const result = await startServer(server);
+    const body = (await readBody(req)) || {};
+    const result = await startServer(server, {
+      applyFirewall: Boolean(body.applyFirewall)
+    });
     return sendJson(res, 200, result);
   }
   if (method === "POST" && action === "stop") {
@@ -1494,8 +1634,14 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, result);
   }
   if (method === "POST" && action === "update") {
-    // Don't await full update (can take long); kick off and return
-    runSteamUpdate(server).catch(err => addActivity(`Update failed for ${server.profile}: ${err.message}`, "error"));
+    const body = (await readBody(req)) || {};
+    // Don't await full update (can take hours); kick off and stream to console
+    runSteamUpdate(server, { repair: Boolean(body.repair) }).catch(err => {
+      appendConsoleLog(server.id, `Update failed: ${err.message}`, "error");
+      addActivity(`Update failed for ${server.profile}: ${err.message}`, "error");
+      const runtime = runtimeOf(server.id);
+      runtime.updating = false;
+    });
     return sendJson(res, 202, publicServer(server));
   }
   if (method === "POST" && action === "backup") {
@@ -1504,6 +1650,10 @@ async function handleApi(req, res, url) {
   }
   if (method === "POST" && action === "firewall") {
     const status = await ensureFirewall(server);
+    if (!server.firewallAutoApproved) {
+      server.firewallAutoApproved = true;
+      scheduleSave();
+    }
     return sendJson(res, 200, { ...publicServer(server), firewallStatus: status });
   }
   if (method === "POST" && action === "open-ini") {

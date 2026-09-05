@@ -61,6 +61,107 @@ function Stop-ListenerOnPort {
   Start-Sleep -Milliseconds 400
 }
 
+function Invoke-GitQuiet {
+  param([Parameter(Mandatory)][string[]]$GitArgs)
+  $previousPrompt = $env:GIT_TERMINAL_PROMPT
+  $previousGcm = $env:GCM_INTERACTIVE
+  $env:GIT_TERMINAL_PROMPT = "0"
+  $env:GCM_INTERACTIVE = "never"
+  try {
+    & git @GitArgs 2>&1 | Out-Null
+    return ($LASTEXITCODE -eq 0)
+  } finally {
+    if ($null -eq $previousPrompt) { Remove-Item Env:\GIT_TERMINAL_PROMPT -ErrorAction SilentlyContinue }
+    else { $env:GIT_TERMINAL_PROMPT = $previousPrompt }
+    if ($null -eq $previousGcm) { Remove-Item Env:\GCM_INTERACTIVE -ErrorAction SilentlyContinue }
+    else { $env:GCM_INTERACTIVE = $previousGcm }
+  }
+}
+
+function Update-ArkManagerFromGit {
+  $gitCommand = Get-Command git -ErrorAction SilentlyContinue
+  if (-not $gitCommand) {
+    Write-Host "Git was not found on PATH. Skipping update check and starting with the current files." -ForegroundColor Yellow
+    return $false
+  }
+
+  Push-Location $projectRoot
+  try {
+    if (-not (Invoke-GitQuiet @("rev-parse", "--is-inside-work-tree"))) {
+      Write-Host "This folder is not a git repository. Skipping update check." -ForegroundColor Yellow
+      return $false
+    }
+
+    $originUrl = (git remote get-url origin 2>$null)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($originUrl)) {
+      Write-Host "No git remote named origin was found. Skipping update check." -ForegroundColor Yellow
+      return $false
+    }
+
+    # Prefer the public HTTPS URL so updates do not depend on SSH keys or a GitHub login.
+    $publicUrl = "https://github.com/Genis221/Ark-Server-GUI.git"
+    if ($originUrl -notmatch "Genis221/Ark-Server-GUI(\.git)?(\s|$)") {
+      $publicUrl = ($originUrl -replace "^git@github\.com:", "https://github.com/" -replace "^ssh://git@github\.com/", "https://github.com/" -replace "\.git$", "") + ".git"
+      if ($publicUrl -notmatch "^https://github\.com/") { $publicUrl = $originUrl }
+    }
+
+    Write-Host "Checking GitHub for Ark Manager updates..." -ForegroundColor DarkGray
+
+    # 1) Anonymous fetch — no credential helper (works for public repos).
+    $fetched = Invoke-GitQuiet @(
+      "-c", "credential.helper=",
+      "fetch", "--prune", "--no-tags", $publicUrl,
+      "+refs/heads/main:refs/remotes/origin/main"
+    )
+
+    # 2) Fall back to saved credentials / default remote if needed.
+    if (-not $fetched) {
+      $fetched = Invoke-GitQuiet @("fetch", "--prune", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main")
+    }
+
+    if (-not $fetched) {
+      Write-Host "Could not reach GitHub. Skipping update and starting with the current files." -ForegroundColor Yellow
+      return $false
+    }
+
+    $remoteRef = "origin/main"
+    if (-not (Invoke-GitQuiet @("rev-parse", "--verify", "$remoteRef^{commit}"))) {
+      $remoteRef = "origin/HEAD"
+      if (-not (Invoke-GitQuiet @("rev-parse", "--verify", "$remoteRef^{commit}"))) {
+        Write-Host "Could not resolve the remote branch. Skipping update." -ForegroundColor Yellow
+        return $false
+      }
+    }
+
+    $localSha = (git rev-parse HEAD).Trim()
+    $remoteSha = (git rev-parse $remoteRef).Trim()
+    if ($localSha -eq $remoteSha) {
+      Write-Host "Already up to date." -ForegroundColor Green
+      return $false
+    }
+
+    Write-Host "Updating Ark Manager from $remoteRef..." -ForegroundColor Yellow
+    # Overwrite local manager source. Do not use -x so gitignored data/ is preserved.
+    if (-not (Invoke-GitQuiet @("reset", "--hard", $remoteRef))) {
+      Write-Host "git reset failed. Starting with the current files." -ForegroundColor Red
+      return $false
+    }
+    Invoke-GitQuiet @("clean", "-fd") | Out-Null
+
+    $shortSha = (git rev-parse --short HEAD).Trim()
+    Write-Host "Updated to $shortSha. Local data/ (profiles, state) was left alone." -ForegroundColor Green
+    return $true
+  } finally {
+    Pop-Location
+  }
+}
+
+$didUpdate = Update-ArkManagerFromGit
+
+# Always free the port so an update (or a leftover process) starts clean.
+if ($didUpdate) {
+  Write-Host "Restarting manager with the updated files..." -ForegroundColor Cyan
+}
 Stop-ListenerOnPort -Port $Port
 
 $lanIp = Get-LanIPv4

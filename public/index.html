@@ -93,6 +93,35 @@
       </div>
     </dialog>
 
+    <dialog id="firewall-dialog" class="modal">
+      <div class="modal-body">
+        <h2>Allow firewall rules?</h2>
+        <p id="firewall-message">
+          Allow Ark Manager to add Windows firewall rules for this server’s game, query, and RCON ports when it starts?
+          Choose Allow once and you will not be asked again for this profile.
+        </p>
+        <div class="modal-actions">
+          <button type="button" class="btn secondary" id="firewall-cancel">Cancel start</button>
+          <button type="button" class="btn secondary" id="firewall-skip">Start without firewall</button>
+          <button type="button" class="btn primary" id="firewall-allow">Allow &amp; start</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="repair-dialog" class="modal">
+      <div class="modal-body">
+        <h2>SteamCMD repair needed</h2>
+        <p id="repair-message">
+          SteamCMD reported app state 0x6 (stuck or corrupt install). Repair deletes everything under the install folder
+          except ShooterGame\Saved (worlds and configs), then redownloads the server.
+        </p>
+        <div class="modal-actions">
+          <button type="button" class="btn secondary" id="repair-cancel">Not now</button>
+          <button type="button" class="btn danger" id="repair-ok">Repair &amp; Redownload</button>
+        </div>
+      </div>
+    </dialog>
+
     <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
     <script type="module" src="/app.js"></script>
   </body>
