@@ -1,177 +1,244 @@
-V 1.0 Patch Notes:
-Initial Release 
+# ARK: Survival Ascended Server Manager (Web)
 
-Note: please dont use this in any other setting, developing it, without my consent, and also if you do get permission from me, please credit me as i worked really hard on this :)
+A local web control panel for managing **ARK: Survival Ascended** dedicated servers on Windows.
 
-ARK: Survival Ascended Server Manager
+It replaces the old PyQt desktop GUI with a browser-based manager (same idea as a self-hosted Minecraft panel): start/stop servers, update via SteamCMD, schedules, backups, firewall helpers, and a live console with RCON chat/commands.
 
-1. Purpose
-This SOP outlines the process for installing, configuring, and managing ARK: Survival Ascended servers using the custom Server Manager GUI. It covers server setup, automation, updates, backups, and general operation.
+---
 
-2. System Overview
+## Requirements
 
-The Server Manager is a standalone GUI application that allows users to:
-	• Manage multiple server profiles 
-	• Configure launch arguments 
-	• Automate server start/restart/update cycles 
-	• Perform backups 
-	• Manage logs and server files 
-	• Integrate SteamCMD installation 
-	• Automatically configure firewall rules 
+- **Windows** (process control, SteamCMD, firewall, and path handling are Windows-oriented)
+- **[Node.js 20+](https://nodejs.org/)** on your PATH
+- ARK Survival Ascended Dedicated Server files (installed via SteamCMD / Steam)
+- Optional: SteamCMD for install/update/verify
 
-3. Installation
-3.1 Server Manager Installation
-	1. Download or obtain the Server Manager .exe file. 
-	2. Place it in your desired directory. 
-	3. Run the .exe file. 
-	4. A configuration file will automatically be created in the same directory as the executable. 
-	⚠️ No installer is required — execution initializes the application.
+No `npm install` is required — the app uses only Node built-ins.
 
-3.2 SteamCMD Installation
-	1. Click “Download SteamCMD” in the GUI. 
-	2. The tool will download SteamCMD from the official source. 
-	3. Default install location:
+---
 
-Documents\SteamCMD
-	4. You may manually set or browse to a different location if needed. 
+## Quick start
 
-3.3 Server Files Installation
-	• Server files are installed separately from the manager. 
-	• Use “Update / Verify” to: 
-		○ Install server files if missing 
-		○ Update existing server files 
-	• Installation directory is user-defined. 
+1. Clone this repo:
 
-4. Creating & Managing Server Profiles
-4.1 Profile Creation
-	• Click “New Server” 
-	• Enter a Profile Name 
-	✅ The profile name automatically becomes the server name
+```bash
+git clone https://github.com/Genis221/Ark-Server-GUI.git
+cd Ark-Server-GUI
+```
 
-4.2 Profile Configuration
-Each profile includes:
-	• Installation Location 
-	• SteamCMD Location 
-	• Launch Arguments 
-	• Cluster Settings (optional) 
+2. Start the manager:
 
-4.3 Launch Arguments
-	• Fully customizable 
-	• Used to define: 
-		○ Map 
-		○ Player count 
-		○ Mods 
-		○ Cluster settings 
-		○ Gameplay rules 
-	⚠️ Firewall rules are automatically derived from these arguments
+- Double-click **`Start Ark Manager.cmd`**, or
+- Run:
 
-5. Server Controls
-5.1 Start / Stop Server
-	• Click Start (Green Button) to launch server 
-	• Button changes to Stop (Red Button) while running 
-	• Clicking Stop: 
-		○ Safely shuts down the server 
-		○ Returns button to green “Start” 
+```bash
+npm start
+```
 
-5.2 Server Status Indicators
-	• Status: Running / Stopped 
-	• Availability: (WIP) 
-	• Players Online: (WIP) 
-	• RCON: (WIP) 
+3. Open the UI (it may open automatically):
 
-6. Updates & Verification
-6.1 Update / Verify
-	• Ensures all server files are: 
-		○ Installed 
-		○ Up to date 
-		○ Not corrupted 
+- Local: `http://127.0.0.1:3220`
+- LAN: `http://YOUR-PC-IP:3220`
 
-6.2 Automatic Updates
-	• Can be triggered: 
-		○ Before server start 
-		○ During scheduled restarts 
+The start script binds to `0.0.0.0` so other devices on your network can reach it. It also stops any previous manager already using port **3220**.
 
-7. Automation Features
-7.1 Automatic Start
-Configure:
-	• Days of the week 
-	• Start time 
-	• Optional update before start 
+---
 
-7.2 Automatic Shutdown / Restart
-Options include:
-	• Scheduled shutdown times 
-	• Auto-restart intervals 
-	• Update on restart 
-	✅ Designed for stability and uptime management
+## What you get
 
-8. Firewall Management
-	• Automatically opens required ports 
-	• Reads: 
-		○ Launch arguments 
-		○ Config files 
-	• Ensures proper server connectivity 
-	🔒 No manual port forwarding needed (for local firewall)
+### Multi-server profiles (tabs)
 
-9. Backup System
-9.1 Backup Intervals
-Selectable options:
-	• 30 minutes 
-	• 1 hour 
-	• 3 hours 
-	• 6 hours 
-	• 12 hours 
-	• 24 hours 
+Each tab is one server profile:
 
-9.2 Backup Features
-	• Automatic world saves 
-	• Manual “Backup Now” option 
-	• Configurable backup directory 
-	• Retention limit (e.g., keep last 20 backups) 
+- Profile name (also used as ASA `SessionName`)
+- Install folder
+- SteamCMD folder
+- Launch arguments (map, ports, mods, cluster flags, etc.)
+- Status / availability / players / firewall
 
-10. Configuration Management
-10.1 Editing Config Files
-From GUI:
-	• Edit Game.ini 
-	• Edit GameUserSettings.ini 
-	✅ Opens files directly for quick edits
+Tab top border colors:
 
-10.2 Log Management
-	• Custom log file location 
-	• Separate: 
-		○ Game logs 
-		○ Update logs 
+- **Green** — running / online
+- **Amber** — starting / updating
+- **Red** — stopped / offline
 
-11. Multi-Server Management
-	• Multiple profiles supported simultaneously 
-	• Each profile: 
-		○ Has independent settings 
-		○ Uses its own install directory 
-		○ Maintains separate logs and backups 
+### Layout
 
-12. Known Work-in-Progress Features
-The following are currently under development:
-	• RCON integration 
-	• Player monitoring 
-	• Availability tracking 
-	• Advanced server analytics 
+- **Left:** profile controls + **Server Configs** (schedules, INI editors, backups, log paths)
+- **Right:** sticky **Console** (live game log + RCON commands / chat)
 
-13. Best Practices
-	• Keep server files on a dedicated drive (if possible) 
-	• Regularly verify server files 
-	• Use automated backups with retention limits 
-	• Schedule restarts to maintain performance 
-	• Keep SteamCMD updated 
+### Theme
 
-14. Notes
-	• The system is functional and stable 
-	• Some features are still being refined 
-	• Designed for scalability and ease of use 
-	• GUI prioritizes simplicity and automation 
+Use the **Light / Dark** button in the toolbar. Preference is saved in the browser.
 
-15. Summary
-This Server Manager provides:
-	• Full lifecycle server control 
-	• Automation for uptime and maintenance 
-	• Built-in safety systems (firewall, backups) 
+---
 
+## Features in detail
+
+### Start / Stop
+
+- Starts `ShooterGame\Binaries\Win64\ArkAscendedServer.exe` with your launch args
+- Writes `SessionName` into `GameUserSettings.ini` before launch
+- Stop finds the matching `ArkAscendedServer.exe` for that install path and terminates it
+- Optionally copies `ShooterGame.log` into your configured game-log folder on stop
+
+### Update / Verify (SteamCMD)
+
+Runs SteamCMD in a visible console window:
+
+```text
++force_install_dir "<install>"
++login anonymous
++app_update 2430930 validate
++quit
+```
+
+SteamCMD can be downloaded from the UI into `Documents\SteamCMD` (or set a custom path).
+
+### Availability & players
+
+1. Tries Steam A2S query on the `QueryPort` from launch args  
+2. Falls back to reading `ShooterGame.log` for “ready” lines  
+3. If the process is up and query isn’t available (common on ASA), shows **Online**
+
+Player counts come from A2S when that works; otherwise max players is parsed from launch args (`WinLiveMaxPlayers` / `MaxPlayers`).
+
+### Server Configs
+
+Collapsible sections for:
+
+- **Automatic Start** — days + time + optional update-before-start
+- **Automatic Shutdown / Restart** — days + time + optional update + restart
+- **Server Configuration** — open `Game.ini` / `GameUserSettings.ini`, apply firewall rules
+- **Automatic World Save Backup** — zip `SavedArks`, retention, schedule
+- **Logs** — destinations for game logs and update logs
+
+### Console (live + RCON)
+
+- Streams new lines from `ShooterGame\Saved\Logs\ShooterGame.log`
+- Sends RCON commands (Source RCON protocol)
+- **Chat** checkbox sends `ServerChat <message>` so you can talk to players
+- Polls `GetChat` for player chat when RCON is configured
+- Quick actions: `ListPlayers`, `GetChat`, Clear
+
+#### Enable RCON in `GameUserSettings.ini`
+
+```ini
+[ServerSettings]
+RCONEnabled=True
+RCONPort=27020
+ServerAdminPassword=YourStrongPassword
+```
+
+Restart the ARK server after changing these. Firewall rules should allow the RCON port (TCP) if you use remote tools; the manager talks to RCON on `127.0.0.1`.
+
+Example commands:
+
+```text
+ListPlayers
+SaveWorld
+Broadcast Restart in 5 minutes
+ServerChat Hello tribe
+GetChat
+DoExit
+```
+
+Many chat/broadcast commands return an empty RCON body — that is normal.
+
+### Copy Server Settings
+
+Toolbar action to copy selected settings between profiles (launch args, schedules, backup, logs, and optionally INI files with a `.bak` backup).
+
+### Firewall helper
+
+Creates inbound Windows firewall rules (TCP + UDP) for:
+
+- Game `Port` and `Port+1`
+- `QueryPort`
+- `RCONPort` from the INI (when present)
+
+May require Administrator rights (`Needs Admin` if rules fail).
+
+---
+
+## How it works (architecture)
+
+```text
+Browser UI (public/)  --HTTP/SSE-->  Node server (server.mjs)
+                                        |
+                                        +-- data/state.json   (profiles)
+                                        +-- ArkAscendedServer.exe
+                                        +-- SteamCMD
+                                        +-- Game INIs / SavedArks / logs
+                                        +-- RCON (127.0.0.1)
+```
+
+| Piece | Role |
+|--------|------|
+| `server.mjs` | HTTP API, static files, process control, SteamCMD, backups, A2S, RCON, log SSE |
+| `public/` | Vanilla SPA (HTML/CSS/JS), no React/Vite |
+| `data/state.json` | Saved profiles + activity (created at runtime) |
+| `Start Ark Manager.cmd` / `.ps1` | Windows launcher, frees port 3220, prints LAN URL |
+
+### Important API routes
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/state` | Profiles + live status (fast path; deep probes in background) |
+| `POST` | `/api/servers` | Create profile |
+| `PATCH` | `/api/servers/:id` | Update settings (autosaved from UI) |
+| `DELETE` | `/api/servers/:id` | Delete profile |
+| `POST` | `/api/servers/:id/start\|stop\|update\|backup\|firewall\|command` | Actions |
+| `GET` | `/api/servers/:id/console-stream` | SSE live console |
+
+Default bind: `0.0.0.0:3220`  
+Env overrides: `ARK_HOST`, `ARK_PORT`, `ARK_DATA_DIR`, `ARK_ALLOW_REMOTE`, `ARK_ALLOW_PUBLIC`
+
+Security defaults:
+
+- LAN / loopback clients allowed
+- Public non-private IPs blocked unless `ARK_ALLOW_PUBLIC=true`
+- Set `ARK_ALLOW_REMOTE=false` to force loopback-only API access
+
+---
+
+## First-run config import
+
+If `data/state.json` does not exist yet, the manager imports profiles from a root `config.json` (legacy desktop format), if present. After that, only `data/state.json` is used.
+
+`config.json` and `data/` are gitignored so local paths/secrets stay on your machine.
+
+---
+
+## Project layout
+
+```text
+Ark-Server-GUI/
+├── server.mjs              # Backend
+├── package.json
+├── Start Ark Manager.cmd
+├── Start-ArkManager.ps1
+├── public/
+│   ├── index.html
+│   ├── app.js
+│   ├── styles.css
+│   └── ark-icon.jpg
+├── data/                   # Runtime (gitignored)
+└── README.md
+```
+
+---
+
+## Tips
+
+- Put full ASA launch args in the **Launch Arguments** field (map `?listen?Port=...`, `-mods=...`, `-clusterID=...`, etc.).
+- Paths are typed/validated on the host PC (browsers cannot pick arbitrary absolute folders).
+- If the page shows “Loading profiles…” forever, another process may be stuck on port 3220 — run `Start Ark Manager.cmd` again (it clears the port), or check Task Manager for `node`.
+- Allow inbound TCP **3220** in Windows Firewall if other PCs on the LAN cannot open the UI.
+- Keep `ServerAdminPassword` private. Anyone with RCON access can fully control the server.
+
+---
+
+## License / credit
+
+Built for personal / authorized use managing your own ASA dedicated servers. If you redistribute or fork, please credit the original author.

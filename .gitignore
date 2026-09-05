@@ -1,12 +1,13 @@
 ﻿################################################################################
-# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+# Ark Server Manager (web)
 ################################################################################
 
 /.vs
-/README.md
-/.github
-/build/Ark SA GUI
-/dist
-/Ark SA GUI.spec
+/data/
+/web/
 /config.json
-/Ark SA GUI.py.pre_restore.bak
+node_modules/
+*.log
+.DS_Store
+__pycache__/
+*.pyc

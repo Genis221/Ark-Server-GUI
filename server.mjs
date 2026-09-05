@@ -1,0 +1,1628 @@
+import dns from "node:dns";
+import http from "node:http";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn, execFile } from "node:child_process";
+import dgram from "node:dgram";
+import { createWriteStream } from "node:fs";
+import {
+  access,
+  copyFile,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile
+} from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
+import { createInterface } from "node:readline";
+import { promisify } from "node:util";
+import { randomUUID } from "node:crypto";
+import { watch } from "node:fs";
+
+const execFileAsync = promisify(execFile);
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = path.join(ROOT, "public");
+const DATA_DIR = path.resolve(process.env.ARK_DATA_DIR || path.join(ROOT, "data"));
+const STATE_FILE = path.join(DATA_DIR, "state.json");
+const LEGACY_CONFIG = path.join(ROOT, "config.json");
+const PORT = Number(process.env.ARK_PORT || process.env.PORT || 3220);
+const HOST = process.env.ARK_HOST || "0.0.0.0";
+const ALLOW_REMOTE = process.env.ARK_ALLOW_REMOTE !== "false";
+const MAX_BODY = 4 * 1024 * 1024;
+const STEAM_APP_ID = "2430930";
+const STEAMCMD_URL = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip";
+const EXE_NAME = "ArkAscendedServer.exe";
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const BACKUP_INTERVALS = {
+  "30 mins": 30,
+  "1 hr": 60,
+  "2 hrs": 120,
+  "4 hrs": 240,
+  "6 hrs": 360,
+  "12 hrs": 720,
+  "24 hrs": 1440
+};
+const mime = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".ico": "image/x-icon",
+  ".svg": "image/svg+xml"
+};
+
+let state;
+const runtimes = new Map();
+let saveTimer = null;
+let automationRunning = false;
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function clampInt(value, min, max, fallback) {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+}
+
+function defaultDays() {
+  return [false, false, false, false, false, false, false];
+}
+
+function normalizeDays(value) {
+  if (!Array.isArray(value) || value.length !== 7) return defaultDays();
+  return value.map(Boolean);
+}
+
+function makeServer(partial = {}) {
+  return {
+    id: partial.id || randomUUID(),
+    profile: String(partial.profile || partial.name || "New Server").trim() || "New Server",
+    install: String(partial.install || partial.folder || "").trim(),
+    steamcmd: String(partial.steamcmd || "").trim(),
+    version: String(partial.version || "").trim(),
+    launchArgs: String(partial.launch_args ?? partial.launchArgs ?? "").trim(),
+    autostartDays: normalizeDays(partial.autostart_days ?? partial.autostartDays),
+    autostartTime: String(partial.autostart_time ?? partial.autostartTime ?? "09:00"),
+    autostartUpdate: Boolean(partial.autostart_update ?? partial.autostartUpdate),
+    shutdownDays: normalizeDays(partial.shutdown_days ?? partial.shutdownDays),
+    shutdownTime: String(partial.shutdown_time ?? partial.shutdownTime ?? "08:00"),
+    performUpdate: Boolean(partial.perform_update ?? partial.performUpdate),
+    thenRestart: Boolean(partial.then_restart ?? partial.thenRestart),
+    autoBackupEnabled: Boolean(partial.auto_backup_enabled ?? partial.autoBackupEnabled),
+    autoBackupInterval: String(partial.auto_backup_interval ?? partial.autoBackupInterval ?? "30 mins"),
+    autoBackupDest: String(partial.auto_backup_dest ?? partial.autoBackupDest ?? "").trim(),
+    backupLimit: String(partial.backup_limit ?? partial.backupLimit ?? "10"),
+    logLocation: String(partial.log_location ?? partial.logLocation ?? "").trim(),
+    updateLogLocation: String(partial.update_log_location ?? partial.updateLogLocation ?? "").trim(),
+    firewallStatus: String(partial.firewallStatus || "Not Checked"),
+    lastBackupAt: partial.lastBackupAt || null,
+    order: Number.isFinite(Number(partial.order)) ? Number(partial.order) : 0
+  };
+}
+
+function fromLegacy(entry, index) {
+  return makeServer({ ...entry, order: index });
+}
+
+async function ensureDataDir() {
+  await mkdir(DATA_DIR, { recursive: true });
+}
+
+async function loadState() {
+  await ensureDataDir();
+  try {
+    const raw = await readFile(STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    const servers = Array.isArray(parsed.servers) ? parsed.servers.map((s, i) => makeServer({ ...s, order: s.order ?? i })) : [];
+    state = { servers, activity: Array.isArray(parsed.activity) ? parsed.activity.slice(0, 100) : [] };
+    return;
+  } catch {
+    // fall through to legacy import
+  }
+
+  try {
+    const raw = await readFile(LEGACY_CONFIG, "utf8");
+    const parsed = JSON.parse(raw);
+    const servers = Array.isArray(parsed.servers) ? parsed.servers.map(fromLegacy) : [];
+    state = { servers: servers.length ? servers : [makeServer()], activity: [{ time: nowIso(), message: "Imported desktop config.json", level: "info" }] };
+  } catch {
+    state = { servers: [makeServer()], activity: [] };
+  }
+  await persistState(true);
+}
+
+function scheduleSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => persistState(false).catch(console.error), 400);
+}
+
+async function persistState(force) {
+  if (saveTimer && !force) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  await ensureDataDir();
+  const payload = JSON.stringify({ servers: state.servers, activity: state.activity.slice(0, 100) }, null, 2);
+  await writeFile(STATE_FILE, payload, "utf8");
+}
+
+function addActivity(message, level = "info") {
+  state.activity.unshift({ time: nowIso(), message, level });
+  state.activity = state.activity.slice(0, 100);
+  scheduleSave();
+}
+
+function getServer(id) {
+  return state.servers.find(s => s.id === id);
+}
+
+function runtimeOf(id) {
+  if (!runtimes.has(id)) {
+    runtimes.set(id, {
+      status: "stopped",
+      availability: "Offline",
+      players: 0,
+      maxPlayers: 70,
+      pid: null,
+      startedAt: 0,
+      updating: false,
+      backupInProgress: false,
+      autoStartTriggeredDate: "",
+      shutdownTriggeredDate: "",
+      consoleLogs: [],
+      consoleNextId: 0,
+      consoleStreams: new Set(),
+      logWatch: null,
+      logOffset: 0,
+      chatPollTimer: null,
+      lastChatRaw: ""
+    });
+  }
+  const runtime = runtimes.get(id);
+  runtime.consoleLogs ||= [];
+  runtime.consoleStreams ||= new Set();
+  return runtime;
+}
+
+function parseQueryPort(launchArgs) {
+  const match = String(launchArgs || "").match(/QueryPort=(\d+)/i);
+  return match ? Number(match[1]) : 27015;
+}
+
+function parseGamePort(launchArgs) {
+  const match = String(launchArgs || "").match(/(?:^|[?&\s])Port=(\d+)/i);
+  return match ? Number(match[1]) : null;
+}
+
+function parseMaxPlayers(launchArgs) {
+  const text = String(launchArgs || "");
+  let match = text.match(/WinLiveMaxPlayers=(\d+)/i);
+  if (match) return Number(match[1]);
+  match = text.match(/[?&]MaxPlayers=(\d+)/i);
+  return match ? Number(match[1]) : 70;
+}
+
+function exePathFor(server) {
+  return path.join(server.install, "ShooterGame", "Binaries", "Win64", EXE_NAME);
+}
+
+function gusIniPath(server) {
+  return path.join(server.install, "ShooterGame", "Saved", "Config", "WindowsServer", "GameUserSettings.ini");
+}
+
+function gameIniPath(server) {
+  return path.join(server.install, "ShooterGame", "Saved", "Config", "WindowsServer", "Game.ini");
+}
+
+function savedArksPath(server) {
+  return path.join(server.install, "ShooterGame", "Saved", "SavedArks");
+}
+
+function isLoopbackRequest(req) {
+  const address = req.socket.remoteAddress || "";
+  return address === "127.0.0.1" || address === "::1" || address.startsWith("::ffff:127.");
+}
+
+function isPrivateLanAddress(address) {
+  const ip = String(address || "").replace(/^::ffff:/, "");
+  if (ip === "127.0.0.1" || ip === "::1") return true;
+  if (ip.startsWith("10.")) return true;
+  if (ip.startsWith("192.168.")) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)) return true;
+  return false;
+}
+
+function lanAddresses() {
+  const results = [];
+  const ifaces = os.networkInterfaces();
+  for (const entries of Object.values(ifaces)) {
+    for (const entry of entries || []) {
+      if (entry.internal || entry.family !== "IPv4") continue;
+      results.push(entry.address);
+    }
+  }
+  return results;
+}
+
+function sendJson(res, status, body) {
+  const data = JSON.stringify(body);
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(data),
+    "Cache-Control": "no-store"
+  });
+  res.end(data);
+}
+
+async function readBody(req, limit = MAX_BODY) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) throw Object.assign(new Error("Body too large"), { status: 413 });
+    chunks.push(chunk);
+  }
+  if (!chunks.length) return null;
+  const text = Buffer.concat(chunks).toString("utf8");
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw Object.assign(new Error("Invalid JSON"), { status: 400 });
+  }
+}
+
+function publicServer(server, rcon = null) {
+  const runtime = runtimeOf(server.id);
+  const {
+    id, profile, install, steamcmd, version, launchArgs,
+    autostartDays, autostartTime, autostartUpdate,
+    shutdownDays, shutdownTime, performUpdate, thenRestart,
+    autoBackupEnabled, autoBackupInterval, autoBackupDest, backupLimit,
+    logLocation, updateLogLocation, firewallStatus, lastBackupAt, order
+  } = server;
+  return {
+    id, profile, install, steamcmd, version, launchArgs,
+    autostartDays, autostartTime, autostartUpdate,
+    shutdownDays, shutdownTime, performUpdate, thenRestart,
+    autoBackupEnabled, autoBackupInterval, autoBackupDest, backupLimit,
+    logLocation, updateLogLocation, firewallStatus, lastBackupAt, order,
+    status: runtime.updating ? "Updating" : runtime.status,
+    availability: runtime.availability,
+    players: runtime.players,
+    maxPlayers: runtime.maxPlayers || parseMaxPlayers(server.launchArgs),
+    pid: runtime.pid,
+    backupInProgress: Boolean(runtime.backupInProgress),
+    startedAt: runtime.startedAt || null,
+    rcon
+  };
+}
+
+async function getRconPublic(server) {
+  try {
+    const settings = await readRconSettings(gusIniPath(server));
+    return {
+      enabled: settings.enabled,
+      port: settings.port,
+      hasPassword: Boolean(settings.password)
+    };
+  } catch {
+    return { enabled: false, port: 27020, hasPassword: false };
+  }
+}
+
+async function publicStateAsync() {
+  const ordered = [...state.servers].sort((a, b) => a.order - b.order);
+  const servers = await Promise.all(ordered.map(async server => publicServer(server, await getRconPublic(server))));
+  return {
+    host: {
+      managerPort: PORT,
+      bindHost: HOST,
+      hostname: os.hostname(),
+      lanAddresses: lanAddresses(),
+      platform: process.platform,
+      node: process.version
+    },
+    servers,
+    activity: state.activity.slice(0, 40)
+  };
+}
+
+function publicState() {
+  const ordered = [...state.servers].sort((a, b) => a.order - b.order);
+  return {
+    host: {
+      managerPort: PORT,
+      bindHost: HOST,
+      hostname: os.hostname(),
+      lanAddresses: lanAddresses(),
+      platform: process.platform,
+      node: process.version
+    },
+    servers: ordered.map(server => publicServer(server, server._rconPublic || null)),
+    activity: state.activity.slice(0, 40)
+  };
+}
+
+async function pathExists(target) {
+  try {
+    await access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function updateSessionName(iniPath, sessionName) {
+  if (!(await pathExists(iniPath))) return;
+  const raw = await readFile(iniPath, "utf8");
+  const lines = raw.split(/\r?\n/);
+  let found = false;
+  const next = lines.map(line => {
+    if (line.trim().startsWith("SessionName=")) {
+      found = true;
+      return `SessionName=${sessionName}`;
+    }
+    return line;
+  });
+  if (!found) {
+    const idx = next.findIndex(l => l.trim().toLowerCase() === "[sessionsettings]");
+    if (idx >= 0) next.splice(idx + 1, 0, `SessionName=${sessionName}`);
+    else next.push("[SessionSettings]", `SessionName=${sessionName}`);
+  }
+  await writeFile(iniPath, next.join("\n"), "utf8");
+}
+
+async function readRconSettings(iniPath) {
+  const defaults = { enabled: false, port: 27020, password: "" };
+  if (!(await pathExists(iniPath))) return defaults;
+  const raw = await readFile(iniPath, "utf8");
+  const enabled = /RCONEnabled\s*=\s*True/i.test(raw);
+  const portMatch = raw.match(/RCONPort\s*=\s*(\d+)/i);
+  const passMatch = raw.match(/ServerAdminPassword\s*=\s*(.*)$/im);
+  return {
+    enabled,
+    port: portMatch ? Number(portMatch[1]) : 27020,
+    password: passMatch ? String(passMatch[1]).trim() : ""
+  };
+}
+
+async function readRconPort(iniPath) {
+  const settings = await readRconSettings(iniPath);
+  return settings.port || null;
+}
+
+function encodeRconPacket(id, type, body) {
+  const payload = Buffer.from(`${body}\0\0`, "utf8");
+  const size = 4 + 4 + payload.length;
+  const packet = Buffer.alloc(4 + size);
+  packet.writeInt32LE(size, 0);
+  packet.writeInt32LE(id, 4);
+  packet.writeInt32LE(type, 8);
+  payload.copy(packet, 12);
+  return packet;
+}
+
+function decodeRconPackets(buffer) {
+  const packets = [];
+  let offset = 0;
+  while (buffer.length - offset >= 4) {
+    const size = buffer.readInt32LE(offset);
+    if (size < 10 || buffer.length - offset < 4 + size) break;
+    const id = buffer.readInt32LE(offset + 4);
+    const type = buffer.readInt32LE(offset + 8);
+    const bodyEnd = offset + 4 + size - 2;
+    const body = buffer.toString("utf8", offset + 12, bodyEnd);
+    packets.push({ id, type, body });
+    offset += 4 + size;
+  }
+  return { packets, rest: buffer.subarray(offset) };
+}
+
+function rconExec(host, port, password, command, timeoutMs = 6000) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host, port });
+    let buffer = Buffer.alloc(0);
+    let authed = false;
+    let settled = false;
+    let response = "";
+    const authId = 1;
+    const cmdId = 2;
+    const endId = 3;
+
+    const finish = (err, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { socket.destroy(); } catch { /* ignore */ }
+      if (err) reject(err);
+      else resolve(value);
+    };
+
+    const timer = setTimeout(() => {
+      if (authed) finish(null, response.trim());
+      else finish(new Error("RCON timed out"));
+    }, timeoutMs);
+
+    socket.on("connect", () => {
+      socket.write(encodeRconPacket(authId, 3, password || ""));
+    });
+
+    socket.on("data", chunk => {
+      buffer = Buffer.concat([buffer, chunk]);
+      const decoded = decodeRconPackets(buffer);
+      buffer = decoded.rest;
+      for (const packet of decoded.packets) {
+        if (!authed) {
+          if (packet.id === -1) return finish(new Error("RCON authentication failed — check ServerAdminPassword"));
+          if (packet.id === authId) {
+            authed = true;
+            socket.write(encodeRconPacket(cmdId, 2, command));
+            socket.write(encodeRconPacket(endId, 0, ""));
+          }
+          continue;
+        }
+        if (packet.id === endId) return finish(null, response.trim());
+        if (packet.id === cmdId || packet.type === 0) response += packet.body;
+      }
+    });
+
+    socket.on("error", err => finish(err));
+    socket.on("close", () => {
+      if (!settled) {
+        if (authed) finish(null, response.trim());
+        else finish(new Error("RCON connection closed"));
+      }
+    });
+  });
+}
+
+function appendConsoleLog(serverId, message, level = "info") {
+  const runtime = runtimeOf(serverId);
+  runtime.consoleNextId = Number(runtime.consoleNextId || 0) + 1;
+  const entry = {
+    id: runtime.consoleNextId,
+    time: nowIso(),
+    level,
+    message: String(message).slice(0, 4000)
+  };
+  runtime.consoleLogs.push(entry);
+  if (runtime.consoleLogs.length > 800) runtime.consoleLogs = runtime.consoleLogs.slice(-800);
+  for (const res of runtime.consoleStreams) {
+    try {
+      res.write(`id: ${entry.id}\ndata: ${JSON.stringify(entry)}\n\n`);
+    } catch {
+      runtime.consoleStreams.delete(res);
+    }
+  }
+  return entry;
+}
+
+function shooterLogPath(server) {
+  return path.join(server.install || "", "ShooterGame", "Saved", "Logs", "ShooterGame.log");
+}
+
+async function ensureLogWatch(server) {
+  const runtime = runtimeOf(server.id);
+  const filePath = shooterLogPath(server);
+  if (!server.install || !(await pathExists(filePath))) return;
+
+  if (runtime.logWatch) return;
+
+  try {
+    const st = await stat(filePath);
+    runtime.logOffset = st.size;
+  } catch {
+    runtime.logOffset = 0;
+  }
+
+  const pull = async () => {
+    try {
+      if (!(await pathExists(filePath))) return;
+      const st = await stat(filePath);
+      if (st.size < runtime.logOffset) runtime.logOffset = 0;
+      if (st.size === runtime.logOffset) return;
+      const fh = await open(filePath, "r");
+      try {
+        const length = st.size - runtime.logOffset;
+        const buf = Buffer.alloc(length);
+        await fh.read(buf, 0, length, runtime.logOffset);
+        runtime.logOffset = st.size;
+        const text = buf.toString("utf8");
+        for (const line of text.split(/\r?\n/)) {
+          if (line.trim()) appendConsoleLog(server.id, line, "log");
+        }
+      } finally {
+        await fh.close();
+      }
+    } catch {
+      // ignore transient read errors
+    }
+  };
+
+  runtime.logWatch = watch(filePath, () => { pull(); });
+  runtime.logWatch.on("error", () => {
+    try { runtime.logWatch.close(); } catch { /* ignore */ }
+    runtime.logWatch = null;
+  });
+  await pull();
+}
+
+function stopLogWatch(serverId) {
+  const runtime = runtimeOf(serverId);
+  if (runtime.logWatch) {
+    try { runtime.logWatch.close(); } catch { /* ignore */ }
+    runtime.logWatch = null;
+  }
+  if (runtime.chatPollTimer) {
+    clearInterval(runtime.chatPollTimer);
+    runtime.chatPollTimer = null;
+  }
+}
+
+async function ensureChatPoll(server) {
+  const runtime = runtimeOf(server.id);
+  if (runtime.chatPollTimer) return;
+  runtime.chatPollTimer = setInterval(async () => {
+    if (!runtime.consoleStreams.size) return;
+    if (String(runtime.status).toLowerCase() !== "running") return;
+    try {
+      const settings = await readRconSettings(gusIniPath(server));
+      if (!settings.enabled || !settings.password) return;
+      const chat = await rconExec("127.0.0.1", settings.port, settings.password, "GetChat", 4000);
+      if (!chat || chat === runtime.lastChatRaw) return;
+      const previous = runtime.lastChatRaw || "";
+      runtime.lastChatRaw = chat;
+      const next = chat.startsWith(previous) ? chat.slice(previous.length) : chat;
+      for (const line of next.split(/\r?\n/)) {
+        if (line.trim()) appendConsoleLog(server.id, `[CHAT] ${line.trim()}`, "chat");
+      }
+    } catch {
+      // RCON may be unavailable during startup
+    }
+  }, 4000);
+}
+
+function openConsoleStream(req, res, server) {
+  const runtime = runtimeOf(server.id);
+  const since = Math.max(0, Number(req.headers["last-event-id"] || 0) || 0);
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  res.write("retry: 1500\n\n");
+  for (const entry of runtime.consoleLogs) {
+    if (entry.id > since) res.write(`id: ${entry.id}\ndata: ${JSON.stringify(entry)}\n\n`);
+  }
+  runtime.consoleStreams.add(res);
+  ensureLogWatch(server).catch(() => {});
+  ensureChatPoll(server).catch(() => {});
+  const keepAlive = setInterval(() => {
+    try { res.write(": keepalive\n\n"); } catch { /* ignore */ }
+  }, 15000);
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    runtime.consoleStreams.delete(res);
+  });
+}
+
+async function getArkVersionFromLogs(install) {
+  const logsDir = path.join(install, "ShooterGame", "Saved", "Logs");
+  if (!(await pathExists(logsDir))) return "Unknown";
+  const entries = await readdir(logsDir);
+  const logs = [];
+  for (const name of entries) {
+    if (!name.toLowerCase().endsWith(".log")) continue;
+    const full = path.join(logsDir, name);
+    const st = await stat(full);
+    logs.push({ full, mtime: st.mtimeMs });
+  }
+  logs.sort((a, b) => b.mtime - a.mtime);
+  const pattern = /ARK Version:\s*([\d.]+)/i;
+  for (const log of logs.slice(0, 5)) {
+    const fh = await open(log.full, "r");
+    try {
+      const stream = fh.createReadStream({ encoding: "utf8" });
+      const rl = createInterface({ input: stream, crlfDelay: Infinity });
+      for await (const line of rl) {
+        const match = pattern.exec(line);
+        if (match) return match[1];
+      }
+    } finally {
+      await fh.close();
+    }
+  }
+  return "Unknown";
+}
+
+function readCString(buf, offset) {
+  let end = offset;
+  while (end < buf.length && buf[end] !== 0) end += 1;
+  return [buf.toString("utf8", offset, end), end + 1];
+}
+
+function queryA2sInfo(host, port, timeoutMs = 700) {
+  return new Promise(resolve => {
+    const sock = dgram.createSocket("udp4");
+    const request = Buffer.concat([
+      Buffer.from([0xFF, 0xFF, 0xFF, 0xFF]),
+      Buffer.from("TSource Engine Query\0", "ascii")
+    ]);
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { sock.close(); } catch { /* ignore */ }
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    sock.on("message", msg => {
+      try {
+        if (msg.length >= 9 && msg[4] === 0x41) {
+          sock.send(Buffer.concat([request, msg.subarray(5, 9)]), port, host);
+          return;
+        }
+        if (msg.length < 6 || msg[4] !== 0x49) return;
+        let offset = 6;
+        let name, mapName;
+        [name, offset] = readCString(msg, offset);
+        [mapName, offset] = readCString(msg, offset);
+        [, offset] = readCString(msg, offset);
+        [, offset] = readCString(msg, offset);
+        offset += 2;
+        if (offset + 2 > msg.length) return;
+        finish({
+          name,
+          map: mapName,
+          players: msg[offset],
+          max_players: msg[offset + 1]
+        });
+      } catch {
+        // keep waiting until timeout
+      }
+    });
+    sock.on("error", () => finish(null));
+    sock.send(request, port, host, err => {
+      if (err) finish(null);
+    });
+  });
+}
+
+async function queryLocalA2s(port) {
+  // Prefer loopback first — ASA often ignores Steam query entirely, so keep this cheap.
+  const hosts = ["127.0.0.1"];
+  const lan = lanAddresses();
+  if (lan[0]) hosts.push(lan[0]);
+  const seen = new Set();
+  for (const host of hosts) {
+    if (!host || seen.has(host)) continue;
+    seen.add(host);
+    const info = await queryA2sInfo(host, port, 600);
+    if (info) return info;
+  }
+  return null;
+}
+
+async function readLogTail(filePath, maxBytes = 256 * 1024) {
+  if (!(await pathExists(filePath))) return "";
+  const fh = await open(filePath, "r");
+  try {
+    const st = await fh.stat();
+    const size = st.size;
+    const start = Math.max(0, size - maxBytes);
+    const length = size - start;
+    if (length <= 0) return "";
+    const buf = Buffer.alloc(length);
+    await fh.read(buf, 0, length, start);
+    return buf.toString("utf8");
+  } finally {
+    await fh.close();
+  }
+}
+
+async function detectReadyFromLogs(install) {
+  const logPath = path.join(install || "", "ShooterGame", "Saved", "Logs", "ShooterGame.log");
+  const text = await readLogTail(logPath);
+  if (!text) return false;
+  return /server has completed startup|set as ready for clients|full startup|startup is complete|steady state|server is ready|server ready/i.test(text);
+}
+
+let processCache = { at: 0, procs: [] };
+let runtimeRefreshPromise = null;
+
+async function listArkProcesses() {
+  if (process.platform !== "win32") return [];
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_Process -Filter \"Name='ArkAscendedServer.exe'\" | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress"
+      ],
+      { windowsHide: true, timeout: 5000, maxBuffer: 2 * 1024 * 1024 }
+    );
+    const trimmed = stdout.trim();
+    if (!trimmed) return [];
+    const parsed = JSON.parse(trimmed);
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    return rows
+      .filter(r => r && r.ProcessId)
+      .map(r => ({
+        pid: Number(r.ProcessId),
+        exe: String(r.ExecutablePath || "")
+      }));
+  } catch {
+    return [];
+  }
+}
+
+async function getArkProcessesCached(maxAgeMs = 2500) {
+  if (Date.now() - processCache.at < maxAgeMs) return processCache.procs;
+  processCache.procs = await listArkProcesses();
+  processCache.at = Date.now();
+  return processCache.procs;
+}
+
+async function findProcessForInstall(install, procs = null) {
+  if (!install) return null;
+  const target = path.normalize(install).toLowerCase();
+  const list = procs || await getArkProcessesCached();
+  return list.find(p => path.normalize(p.exe || "").toLowerCase().includes(target)) || null;
+}
+
+async function refreshRuntime(server, { deep = false, procs = null } = {}) {
+  const runtime = runtimeOf(server.id);
+  if (runtime.updating) {
+    runtime.status = "Updating";
+    return;
+  }
+  const match = await findProcessForInstall(server.install, procs);
+  runtime.maxPlayers = parseMaxPlayers(server.launchArgs);
+  if (match) {
+    runtime.status = "running";
+    runtime.pid = match.pid;
+    if (!runtime.startedAt) runtime.startedAt = Date.now();
+
+    if (!deep) {
+      // Fast path for API responses — never block on A2S/log I/O.
+      if (runtime.availability === "Offline" || !runtime.availability) {
+        runtime.availability = runtime.startedAt && Date.now() - runtime.startedAt < 8 * 60 * 1000
+          ? "Starting…"
+          : "Online";
+      }
+      return;
+    }
+
+    const info = await queryLocalA2s(parseQueryPort(server.launchArgs));
+    if (info) {
+      runtime.availability = "Online";
+      runtime.players = Number(info.players) || 0;
+      runtime.maxPlayers = Number(info.max_players) || runtime.maxPlayers;
+      return;
+    }
+
+    const ready = await detectReadyFromLogs(server.install);
+    if (ready) {
+      runtime.availability = "Online";
+      return;
+    }
+    if (runtime.startedAt && Date.now() - runtime.startedAt < 8 * 60 * 1000) {
+      runtime.availability = "Starting…";
+    } else {
+      runtime.availability = "Online";
+    }
+  } else {
+    runtime.status = "stopped";
+    runtime.pid = null;
+    runtime.availability = "Offline";
+    runtime.players = 0;
+    runtime.startedAt = 0;
+  }
+}
+
+async function refreshAllRuntimes({ deep = false } = {}) {
+  const procs = await getArkProcessesCached(deep ? 0 : 2500);
+  await Promise.all(state.servers.map(server => refreshRuntime(server, { deep, procs })));
+}
+
+function scheduleRuntimeRefresh({ deep = true } = {}) {
+  if (runtimeRefreshPromise) return runtimeRefreshPromise;
+  runtimeRefreshPromise = refreshAllRuntimes({ deep })
+    .catch(err => console.error("[runtime refresh]", err))
+    .finally(() => { runtimeRefreshPromise = null; });
+  return runtimeRefreshPromise;
+}
+
+async function terminatePid(pid) {
+  if (!pid) return;
+  if (process.platform === "win32") {
+    await new Promise(resolve => {
+      const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
+        windowsHide: true,
+        stdio: "ignore"
+      });
+      killer.on("exit", () => resolve());
+      killer.on("error", () => resolve());
+    });
+    return;
+  }
+  try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
+}
+
+async function addFirewallRule(ruleName, protocol, port) {
+  try {
+    const { stdout } = await execFileAsync(
+      "netsh",
+      ["advfirewall", "firewall", "show", "rule", `name=${ruleName}`],
+      { windowsHide: true }
+    );
+    if (!stdout.includes("No rules match the specified criteria")) return true;
+  } catch {
+    // continue to add
+  }
+  try {
+    await execFileAsync(
+      "netsh",
+      [
+        "advfirewall", "firewall", "add", "rule",
+        `name=${ruleName}`,
+        "dir=in", "action=allow", `protocol=${protocol}`,
+        `localport=${port}`
+      ],
+      { windowsHide: true }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureFirewall(server) {
+  const mainPort = parseGamePort(server.launchArgs);
+  if (!mainPort) {
+    server.firewallStatus = "No Port";
+    return server.firewallStatus;
+  }
+  const ports = [mainPort, mainPort + 1];
+  const queryPort = parseQueryPort(server.launchArgs);
+  if (queryPort) ports.push(queryPort);
+  const rcon = await readRconPort(gusIniPath(server));
+  if (rcon) ports.push(rcon);
+  let success = true;
+  for (const port of [...new Set(ports)]) {
+    for (const proto of ["TCP", "UDP"]) {
+      const ok = await addFirewallRule(`Ark Server: ${server.profile} ${proto} Port ${port}`, proto, port);
+      if (!ok) success = false;
+    }
+  }
+  server.firewallStatus = success ? "Good" : "Needs Admin";
+  scheduleSave();
+  return server.firewallStatus;
+}
+
+async function copyServerLogOnStop(server) {
+  if (!server.install || !server.logLocation) return;
+  const src = path.join(server.install, "ShooterGame", "Saved", "Logs", "ShooterGame.log");
+  if (!(await pathExists(src))) return;
+  const profile = server.profile.trim() || "Server";
+  const destFolder = path.join(server.logLocation, profile, `${profile} Game Logs`);
+  await mkdir(destFolder, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 15);
+  const dest = path.join(destFolder, `${profile} Game Log ${stamp}.log`);
+  await copyFile(src, dest);
+}
+
+async function startServer(server) {
+  const runtime = runtimeOf(server.id);
+  if (runtime.status === "running" || runtime.updating) {
+    throw Object.assign(new Error("Server is already running or updating"), { status: 409 });
+  }
+  if (!server.install) throw Object.assign(new Error("Install location is not set"), { status: 400 });
+  const exe = exePathFor(server);
+  if (!(await pathExists(exe))) {
+    throw Object.assign(new Error(`Server executable not found:\n${exe}`), { status: 404 });
+  }
+  const existing = await findProcessForInstall(server.install);
+  if (existing) {
+    runtime.status = "running";
+    runtime.pid = existing.pid;
+    runtime.startedAt = Date.now();
+    runtime.availability = "Online";
+    return publicServer(server);
+  }
+
+  await mkdir(path.dirname(gusIniPath(server)), { recursive: true });
+  await updateSessionName(gusIniPath(server), server.profile);
+
+  if (server.firewallStatus !== "Good") {
+    await ensureFirewall(server);
+  }
+
+  const command = server.launchArgs
+    ? `"${exe}" ${server.launchArgs}`
+    : `"${exe}"`;
+  const child = spawn(command, {
+    cwd: path.dirname(exe),
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+    shell: true
+  });
+  child.unref();
+
+  runtime.status = "running";
+  runtime.pid = child.pid;
+  runtime.startedAt = Date.now();
+  runtime.availability = "Starting…";
+  runtime.players = 0;
+  runtime.maxPlayers = parseMaxPlayers(server.launchArgs);
+  addActivity(`Started ${server.profile}`, "success");
+  processCache.at = 0;
+  appendConsoleLog(server.id, `Started ${server.profile}`, "system");
+  ensureLogWatch(server).catch(() => {});
+  ensureChatPoll(server).catch(() => {});
+
+  setTimeout(async () => {
+    try {
+      const version = await getArkVersionFromLogs(server.install);
+      if (version && version !== "Unknown") {
+        server.version = version;
+        scheduleSave();
+      }
+    } catch { /* ignore */ }
+  }, 15000);
+
+  return publicServer(server);
+}
+
+async function stopServer(server, { copyLog = true } = {}) {
+  const runtime = runtimeOf(server.id);
+  if (copyLog) {
+    try { await copyServerLogOnStop(server); } catch (err) {
+      addActivity(`Log copy failed for ${server.profile}: ${err.message}`, "error");
+    }
+  }
+
+  const match = await findProcessForInstall(server.install);
+  const pid = match?.pid || runtime.pid;
+  if (pid) await terminatePid(pid);
+
+  runtime.status = "stopped";
+  runtime.pid = null;
+  runtime.startedAt = 0;
+  runtime.availability = "Offline";
+  runtime.players = 0;
+  addActivity(`Stopped ${server.profile}`, "info");
+  processCache.at = 0;
+  stopLogWatch(server.id);
+  appendConsoleLog(server.id, "Server stopped.", "system");
+  return publicServer(server);
+}
+
+async function downloadSteamCmd(destDir) {
+  const target = destDir || path.join(os.homedir(), "Documents", "SteamCMD");
+  await mkdir(target, { recursive: true });
+  const zipPath = path.join(target, "steamcmd.zip");
+  const res = await fetch(STEAMCMD_URL);
+  if (!res.ok) throw new Error(`SteamCMD download failed (${res.status})`);
+  await pipeline(res.body, createWriteStream(zipPath));
+
+  if (process.platform === "win32") {
+    await execFileAsync(
+      "powershell.exe",
+      ["-NoProfile", "-Command", `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${target.replace(/'/g, "''")}' -Force`],
+      { windowsHide: true }
+    );
+  }
+  await rm(zipPath, { force: true });
+  const exe = path.join(target, "steamcmd.exe");
+  if (await pathExists(exe)) {
+    try {
+      await execFileAsync(exe, ["+quit"], { cwd: target, windowsHide: true, timeout: 120000 });
+    } catch { /* bootstrap may exit non-zero */ }
+  }
+  return target;
+}
+
+function runSteamUpdate(server, { onComplete } = {}) {
+  const runtime = runtimeOf(server.id);
+  const steamcmdExe = path.join(server.steamcmd, "steamcmd.exe");
+  return new Promise(async (resolve, reject) => {
+    if (!(await pathExists(steamcmdExe))) {
+      return reject(Object.assign(new Error("SteamCMD.exe was not found"), { status: 400 }));
+    }
+    if (!server.install) {
+      return reject(Object.assign(new Error("Install location is not set"), { status: 400 }));
+    }
+    await mkdir(server.install, { recursive: true });
+
+    runtime.updating = true;
+    runtime.status = "Updating";
+    runtime.availability = "Offline";
+    addActivity(`Updating ${server.profile} via SteamCMD`, "info");
+
+    const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 15);
+    const profileClean = server.profile.replace(/[\\/]/g, "-");
+    const logBase = server.updateLogLocation || server.install;
+    const updateLogFolder = path.join(logBase, profileClean, `${server.profile} Update Logs`);
+    await mkdir(updateLogFolder, { recursive: true });
+    const logFile = path.join(updateLogFolder, `${server.profile} update log ${stamp}.log`);
+    const batPath = path.join(os.tmpdir(), `ark_update_${profileClean}_${stamp}.bat`);
+
+    const bat = [
+      "@echo off",
+      `title Updating ${server.profile} Server`,
+      "echo ==============================================",
+      `echo Updating ${server.profile} Server`,
+      `echo Server Path: ${server.install}`,
+      "echo ==============================================",
+      "echo.",
+      "echo [1/2] Running SteamCMD bootstrap...",
+      `"${steamcmdExe}" +quit`,
+      "echo.",
+      "echo [2/2] Installing / Updating ARK Survival Ascended Dedicated Server...",
+      `"${steamcmdExe}" +force_install_dir "${server.install}" +login anonymous +app_update ${STEAM_APP_ID} validate +quit`,
+      `echo Exit code: %ERRORLEVEL%>> "${logFile}"`,
+      "exit /b %ERRORLEVEL%"
+    ].join("\r\n");
+    await writeFile(batPath, bat, "utf8");
+
+    const child = spawn("cmd.exe", ["/c", batPath], {
+      windowsHide: false,
+      stdio: "ignore",
+      detached: true
+    });
+    child.unref();
+
+    const poll = setInterval(async () => {
+      // Detect completion when steamcmd is not holding the update and process is gone.
+      // Use a soft timeout window: check for steamcmd.exe related to this install is hard,
+      // so we watch for bat completion by checking if steamcmd is running + bat still exists.
+    }, 5000);
+
+    // Poll for steamcmd exit by checking for a marker: re-run version read after delay
+    // Better: spawn without detached and wait — but user wants visible console like desktop.
+    // Track via watching steamcmd process count dropping after start.
+    let started = false;
+    const watcher = setInterval(async () => {
+      try {
+        const { stdout } = await execFileAsync(
+          "powershell.exe",
+          ["-NoProfile", "-Command", "(Get-Process steamcmd -ErrorAction SilentlyContinue | Measure-Object).Count"],
+          { windowsHide: true }
+        );
+        const count = Number(String(stdout).trim()) || 0;
+        if (count > 0) started = true;
+        if (started && count === 0) {
+          clearInterval(watcher);
+          clearInterval(poll);
+          runtime.updating = false;
+          try {
+            const version = await getArkVersionFromLogs(server.install);
+            if (version && version !== "Unknown") {
+              server.version = version;
+              scheduleSave();
+            }
+          } catch { /* ignore */ }
+          addActivity(`Update finished for ${server.profile}`, "success");
+          await refreshRuntime(server, { deep: true });
+          resolve(publicServer(server));
+          if (typeof onComplete === "function") {
+            try { await onComplete(); } catch (err) { addActivity(err.message, "error"); }
+          }
+        }
+      } catch {
+        // keep waiting
+      }
+    }, 4000);
+
+    // Safety timeout 2 hours
+    setTimeout(() => {
+      clearInterval(watcher);
+      clearInterval(poll);
+      if (runtime.updating) {
+        runtime.updating = false;
+        addActivity(`Update watch timed out for ${server.profile}`, "error");
+        resolve(publicServer(server));
+      }
+    }, 2 * 60 * 60 * 1000);
+  });
+}
+
+async function zipDirectory(sourceDir, zipPath) {
+  // Prefer PowerShell Compress-Archive for zero-deps zip create on Windows
+  if (!(await pathExists(sourceDir))) throw new Error("SavedArks folder not found");
+  await mkdir(path.dirname(zipPath), { recursive: true });
+  if (await pathExists(zipPath)) await rm(zipPath, { force: true });
+  await execFileAsync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-Command",
+      `Compress-Archive -Path '${sourceDir.replace(/'/g, "''")}\\*' -DestinationPath '${zipPath.replace(/'/g, "''")}' -Force`
+    ],
+    { windowsHide: true, timeout: 30 * 60 * 1000, maxBuffer: 10 * 1024 * 1024 }
+  );
+}
+
+async function pruneBackups(folder, limit) {
+  const keep = clampInt(limit, 1, 100, 10);
+  const entries = await readdir(folder);
+  const zips = [];
+  for (const name of entries) {
+    if (!name.toLowerCase().endsWith(".zip")) continue;
+    const full = path.join(folder, name);
+    const st = await stat(full);
+    zips.push({ full, mtime: st.mtimeMs });
+  }
+  zips.sort((a, b) => b.mtime - a.mtime);
+  for (const old of zips.slice(keep)) {
+    await rm(old.full, { force: true });
+  }
+}
+
+async function backupServer(server) {
+  const runtime = runtimeOf(server.id);
+  if (runtime.backupInProgress) throw Object.assign(new Error("Backup already in progress"), { status: 409 });
+  if (!server.install) throw Object.assign(new Error("Install location is not set"), { status: 400 });
+  const destRoot = server.autoBackupDest || server.install;
+  if (!destRoot) throw Object.assign(new Error("Backup folder is not set"), { status: 400 });
+  const profile = server.profile.trim() || "Server";
+  const backupFolder = path.join(destRoot, `${profile} Backups`);
+  await mkdir(backupFolder, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 15);
+  const zipPath = path.join(backupFolder, `${profile}_${stamp}.zip`);
+  runtime.backupInProgress = true;
+  try {
+    await zipDirectory(savedArksPath(server), zipPath);
+    await pruneBackups(backupFolder, server.backupLimit);
+    server.lastBackupAt = nowIso();
+    scheduleSave();
+    addActivity(`Backup created for ${server.profile}`, "success");
+    return { zipPath, lastBackupAt: server.lastBackupAt };
+  } finally {
+    runtime.backupInProgress = false;
+  }
+}
+
+async function openInEditor(filePath) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  if (!(await pathExists(filePath))) await writeFile(filePath, "", "utf8");
+  if (process.platform === "win32") {
+    const npp = path.join(process.env["ProgramFiles(x86)"] || "", "Notepad++", "notepad++.exe");
+    const npp2 = path.join(process.env.ProgramFiles || "", "Notepad++", "notepad++.exe");
+    const editor = (await pathExists(npp)) ? npp : (await pathExists(npp2)) ? npp2 : "notepad.exe";
+    spawn(editor, [filePath], { detached: true, stdio: "ignore", windowsHide: false }).unref();
+    return;
+  }
+  spawn("xdg-open", [filePath], { detached: true, stdio: "ignore" }).unref();
+}
+
+async function copyConfigFiles(fromServer, toServer) {
+  const pairs = [
+    [gameIniPath(fromServer), gameIniPath(toServer)],
+    [gusIniPath(fromServer), gusIniPath(toServer)]
+  ];
+  for (const [src, dest] of pairs) {
+    if (!(await pathExists(src))) continue;
+    await mkdir(path.dirname(dest), { recursive: true });
+    if (await pathExists(dest)) {
+      const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 15);
+      await copyFile(dest, `${dest}.bak-${stamp}`);
+    }
+    await copyFile(src, dest);
+  }
+}
+
+function copySettings(from, to, flags) {
+  if (flags.launchArgs) to.launchArgs = from.launchArgs;
+  if (flags.autoStart) {
+    to.autostartDays = [...from.autostartDays];
+    to.autostartTime = from.autostartTime;
+    to.autostartUpdate = from.autostartUpdate;
+  }
+  if (flags.shutdown) {
+    to.shutdownDays = [...from.shutdownDays];
+    to.shutdownTime = from.shutdownTime;
+    to.performUpdate = from.performUpdate;
+    to.thenRestart = from.thenRestart;
+  }
+  if (flags.backup) {
+    to.autoBackupEnabled = from.autoBackupEnabled;
+    to.autoBackupInterval = from.autoBackupInterval;
+    to.autoBackupDest = from.autoBackupDest;
+    to.backupLimit = from.backupLimit;
+  }
+  if (flags.logs) {
+    to.logLocation = from.logLocation;
+    to.updateLogLocation = from.updateLogLocation;
+  }
+}
+
+function timeMatchesMinute(hhmm) {
+  const now = new Date();
+  const [h, m] = String(hhmm || "00:00").split(":").map(Number);
+  return now.getHours() === h && now.getMinutes() === m;
+}
+
+function withinShutdownWindow(hhmm) {
+  const now = new Date();
+  const [h, m] = String(hhmm || "00:00").split(":").map(Number);
+  const scheduled = new Date(now);
+  scheduled.setHours(h, m, 0, 0);
+  const diff = (now - scheduled) / 1000;
+  return diff >= 0 && diff <= 120;
+}
+
+function todayKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
+function dayIndexSunday0() {
+  return new Date().getDay(); // 0=Sun
+}
+
+async function automationTick() {
+  if (automationRunning) return;
+  automationRunning = true;
+  try {
+    const dayIdx = dayIndexSunday0();
+    const key = todayKey();
+    for (const server of state.servers) {
+      const runtime = runtimeOf(server.id);
+      await refreshRuntime(server, { deep: false });
+
+      // Auto start
+      if (server.autostartDays[dayIdx] && timeMatchesMinute(server.autostartTime)) {
+        if (runtime.autoStartTriggeredDate !== key && runtime.status === "stopped" && !runtime.updating) {
+          runtime.autoStartTriggeredDate = key;
+          try {
+            if (server.autostartUpdate) {
+              await runSteamUpdate(server, {
+                onComplete: async () => {
+                  await new Promise(r => setTimeout(r, 5000));
+                  await startServer(server);
+                }
+              });
+            } else {
+              await startServer(server);
+            }
+          } catch (err) {
+            addActivity(`Auto-start failed for ${server.profile}: ${err.message}`, "error");
+          }
+        }
+      }
+
+      // Shutdown / restart
+      if (server.shutdownDays[dayIdx] && withinShutdownWindow(server.shutdownTime)) {
+        if (runtime.shutdownTriggeredDate !== key && runtime.status === "running") {
+          runtime.shutdownTriggeredDate = key;
+          try {
+            await stopServer(server);
+            if (server.performUpdate) {
+              await runSteamUpdate(server, {
+                onComplete: server.thenRestart
+                  ? async () => { await startServer(server); }
+                  : undefined
+              });
+            } else if (server.thenRestart) {
+              await startServer(server);
+            }
+          } catch (err) {
+            addActivity(`Scheduled shutdown failed for ${server.profile}: ${err.message}`, "error");
+          }
+        }
+      }
+
+      // Auto backup
+      if (server.autoBackupEnabled && server.autoBackupDest) {
+        const minutes = BACKUP_INTERVALS[server.autoBackupInterval] || 30;
+        const last = server.lastBackupAt ? Date.parse(server.lastBackupAt) : 0;
+        if (!last) {
+          server.lastBackupAt = nowIso();
+          scheduleSave();
+        } else if (Date.now() - last >= minutes * 60 * 1000 && !runtime.backupInProgress) {
+          try {
+            await backupServer(server);
+          } catch (err) {
+            addActivity(`Auto-backup failed for ${server.profile}: ${err.message}`, "error");
+          }
+        }
+      }
+    }
+  } finally {
+    automationRunning = false;
+  }
+}
+
+async function serveStatic(req, res, urlPath) {
+  let rel = decodeURIComponent(urlPath.split("?")[0]);
+  if (rel === "/") rel = "/index.html";
+  const filePath = path.normalize(path.join(PUBLIC_DIR, rel));
+  if (!filePath.startsWith(PUBLIC_DIR)) {
+    res.writeHead(403);
+    return res.end("Forbidden");
+  }
+  try {
+    const data = await readFile(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    res.writeHead(200, { "Content-Type": mime[ext] || "application/octet-stream" });
+    res.end(data);
+  } catch {
+    if (rel !== "/index.html") {
+      const index = await readFile(path.join(PUBLIC_DIR, "index.html"));
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      return res.end(index);
+    }
+    res.writeHead(404);
+    res.end("Not found");
+  }
+}
+
+async function handleApi(req, res, url) {
+  const remote = req.socket.remoteAddress || "";
+  if (!ALLOW_REMOTE && !isLoopbackRequest(req)) {
+    return sendJson(res, 403, { error: "Remote access is disabled. Set ARK_ALLOW_REMOTE=true to enable." });
+  }
+  if (ALLOW_REMOTE && !isLoopbackRequest(req) && !isPrivateLanAddress(remote) && process.env.ARK_ALLOW_PUBLIC !== "true") {
+    return sendJson(res, 403, { error: "Only loopback/LAN clients are allowed. Set ARK_ALLOW_PUBLIC=true to override." });
+  }
+
+  const { pathname } = url;
+  const method = req.method || "GET";
+
+  if (method === "GET" && pathname === "/api/state") {
+    await refreshAllRuntimes({ deep: false });
+    scheduleRuntimeRefresh({ deep: true });
+    return sendJson(res, 200, await publicStateAsync());
+  }
+
+  if (method === "POST" && pathname === "/api/servers") {
+    const body = (await readBody(req)) || {};
+    const server = makeServer({
+      profile: body.profile || "New Server",
+      order: state.servers.length
+    });
+    state.servers.push(server);
+    scheduleSave();
+    addActivity(`Created profile ${server.profile}`, "info");
+    return sendJson(res, 201, publicServer(server));
+  }
+
+  if (method === "POST" && pathname === "/api/path/validate") {
+    const body = (await readBody(req)) || {};
+    const target = String(body.path || "").trim();
+    if (!target) return sendJson(res, 400, { error: "path required" });
+    const exists = await pathExists(target);
+    let isDir = false;
+    if (exists) {
+      try { isDir = (await stat(target)).isDirectory(); } catch { /* ignore */ }
+    }
+    return sendJson(res, 200, { path: target, exists, isDir });
+  }
+
+  if (method === "POST" && pathname === "/api/steamcmd/download") {
+    const body = (await readBody(req)) || {};
+    const dest = await downloadSteamCmd(body.path || undefined);
+    return sendJson(res, 200, { path: dest });
+  }
+
+  if (method === "POST" && pathname === "/api/servers/reorder") {
+    const body = (await readBody(req)) || {};
+    const ids = Array.isArray(body.ids) ? body.ids : [];
+    ids.forEach((id, index) => {
+      const server = getServer(id);
+      if (server) server.order = index;
+    });
+    scheduleSave();
+    return sendJson(res, 200, publicState());
+  }
+
+  if (method === "POST" && pathname === "/api/servers/copy-settings") {
+    const body = (await readBody(req)) || {};
+    const from = getServer(body.fromId);
+    const to = getServer(body.toId);
+    if (!from || !to) return sendJson(res, 404, { error: "Server not found" });
+    if (from.id === to.id) return sendJson(res, 400, { error: "Source and target must differ" });
+    copySettings(from, to, body.flags || {});
+    if (body.flags?.configFiles) await copyConfigFiles(from, to);
+    scheduleSave();
+    addActivity(`Copied settings from ${from.profile} to ${to.profile}`, "success");
+    return sendJson(res, 200, publicServer(to));
+  }
+
+  const match = pathname.match(/^\/api\/servers\/([^/]+)(?:\/(.+))?$/);
+  if (!match) return sendJson(res, 404, { error: "Not found" });
+  const server = getServer(match[1]);
+  if (!server) return sendJson(res, 404, { error: "Server not found" });
+  const action = match[2] || "";
+
+  if (method === "GET" && !action) return sendJson(res, 200, publicServer(server));
+
+  if (method === "PATCH" && !action) {
+    const body = (await readBody(req)) || {};
+    const fields = [
+      "profile", "install", "steamcmd", "version", "launchArgs",
+      "autostartTime", "autostartUpdate", "shutdownTime", "performUpdate", "thenRestart",
+      "autoBackupEnabled", "autoBackupInterval", "autoBackupDest", "backupLimit",
+      "logLocation", "updateLogLocation", "firewallStatus"
+    ];
+    for (const key of fields) {
+      if (body[key] !== undefined) server[key] = body[key];
+    }
+    if (body.autostartDays) server.autostartDays = normalizeDays(body.autostartDays);
+    if (body.shutdownDays) server.shutdownDays = normalizeDays(body.shutdownDays);
+    if (typeof server.profile === "string") server.profile = server.profile.trim() || "New Server";
+    scheduleSave();
+    return sendJson(res, 200, publicServer(server));
+  }
+
+  if (method === "DELETE" && !action) {
+    if (state.servers.length <= 1) {
+      return sendJson(res, 400, { error: "Cannot delete the last server profile" });
+    }
+    const runtime = runtimeOf(server.id);
+    if (runtime.status === "running") await stopServer(server, { copyLog: false });
+    state.servers = state.servers.filter(s => s.id !== server.id);
+    state.servers.forEach((s, i) => { s.order = i; });
+    runtimes.delete(server.id);
+    scheduleSave();
+    addActivity(`Deleted profile ${server.profile}`, "info");
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (method === "POST" && action === "start") {
+    const result = await startServer(server);
+    return sendJson(res, 200, result);
+  }
+  if (method === "POST" && action === "stop") {
+    const result = await stopServer(server);
+    return sendJson(res, 200, result);
+  }
+  if (method === "POST" && action === "update") {
+    // Don't await full update (can take long); kick off and return
+    runSteamUpdate(server).catch(err => addActivity(`Update failed for ${server.profile}: ${err.message}`, "error"));
+    return sendJson(res, 202, publicServer(server));
+  }
+  if (method === "POST" && action === "backup") {
+    const result = await backupServer(server);
+    return sendJson(res, 200, { ...publicServer(server), ...result });
+  }
+  if (method === "POST" && action === "firewall") {
+    const status = await ensureFirewall(server);
+    return sendJson(res, 200, { ...publicServer(server), firewallStatus: status });
+  }
+  if (method === "POST" && action === "open-ini") {
+    const body = (await readBody(req)) || {};
+    const kind = body.kind === "game" ? "game" : "gus";
+    const filePath = kind === "game" ? gameIniPath(server) : gusIniPath(server);
+    if (!server.install) return sendJson(res, 400, { error: "Install location is not set" });
+    await openInEditor(filePath);
+    return sendJson(res, 200, { ok: true, path: filePath });
+  }
+  if (method === "POST" && action === "refresh-version") {
+    const version = await getArkVersionFromLogs(server.install);
+    if (version && version !== "Unknown") {
+      server.version = version;
+      scheduleSave();
+    }
+    return sendJson(res, 200, publicServer(server));
+  }
+
+  if (method === "GET" && action === "console") {
+    const runtime = runtimeOf(server.id);
+    const since = Math.max(0, Number(url.searchParams.get("since") || 0) || 0);
+    return sendJson(res, 200, {
+      logs: runtime.consoleLogs.filter(l => l.id > since),
+      rcon: await getRconPublic(server)
+    });
+  }
+
+  if (method === "GET" && action === "console-stream") {
+    openConsoleStream(req, res, server);
+    return;
+  }
+
+  if (method === "POST" && action === "command") {
+    const body = (await readBody(req)) || {};
+    let command = String(body.command || "").trim();
+    const asChat = Boolean(body.asChat);
+    if (!command) return sendJson(res, 400, { error: "Command is required" });
+    if (asChat) command = `ServerChat ${command}`;
+
+    const settings = await readRconSettings(gusIniPath(server));
+    if (!settings.enabled) {
+      return sendJson(res, 400, { error: "RCON is disabled. Set RCONEnabled=True in GameUserSettings.ini" });
+    }
+    if (!settings.password) {
+      return sendJson(res, 400, { error: "ServerAdminPassword is empty in GameUserSettings.ini" });
+    }
+    if (String(runtimeOf(server.id).status).toLowerCase() !== "running") {
+      return sendJson(res, 409, { error: "Server must be running to use RCON" });
+    }
+
+    appendConsoleLog(server.id, `> ${command}`, "command");
+    try {
+      const reply = await rconExec("127.0.0.1", settings.port, settings.password, command);
+      if (reply) appendConsoleLog(server.id, reply, "rcon");
+      else appendConsoleLog(server.id, "(empty response — normal for chat/broadcast)", "system");
+      return sendJson(res, 200, { ok: true, reply: reply || "" });
+    } catch (err) {
+      appendConsoleLog(server.id, err.message, "error");
+      return sendJson(res, 502, { error: err.message });
+    }
+  }
+
+  return sendJson(res, 404, { error: "Not found" });
+}
+
+async function handler(req, res) {
+  try {
+    const url = new URL(req.url || "/", `http://${HOST}:${PORT}`);
+    if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
+    return await serveStatic(req, res, url.pathname);
+  } catch (err) {
+    const status = err.status || 500;
+    sendJson(res, status, { error: err.message || "Server error" });
+  }
+}
+
+async function main() {
+  await loadState();
+  for (const server of state.servers) runtimeOf(server.id);
+  await refreshAllRuntimes({ deep: false });
+  scheduleRuntimeRefresh({ deep: true });
+
+  setInterval(() => {
+    scheduleRuntimeRefresh({ deep: true });
+  }, 8000);
+
+  setInterval(() => {
+    automationTick().catch(err => console.error("[automation]", err));
+  }, 60000);
+
+  const server = http.createServer((req, res) => {
+    handler(req, res);
+  });
+
+  server.on("error", err => {
+    if (err && err.code === "EADDRINUSE") {
+      console.error(`Port ${PORT} is already in use. Close the other Ark Manager window, or run Start Ark Manager.cmd again (it now stops the old process).`);
+      process.exit(1);
+    }
+    console.error(err);
+    process.exit(1);
+  });
+
+  server.listen(PORT, HOST, () => {
+    const localUrl = `http://127.0.0.1:${PORT}`;
+    const lans = lanAddresses();
+    console.log(`Ark Server Manager listening on ${HOST}:${PORT}`);
+    console.log(`  Local:  ${localUrl}`);
+    for (const ip of lans) console.log(`  LAN:    http://${ip}:${PORT}`);
+    if (!lans.length) console.log("  LAN:    (no IPv4 LAN address found)");
+    if (!process.argv.includes("--no-open") && process.platform === "win32") {
+      const openUrl = lans[0] ? `http://${lans[0]}:${PORT}` : localUrl;
+      spawn("cmd", ["/c", "start", "", openUrl], { detached: true, stdio: "ignore" }).unref();
+    }
+  });
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
