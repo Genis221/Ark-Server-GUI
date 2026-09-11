@@ -196,6 +196,7 @@ function runtimeOf(id) {
       players: 0,
       playerNames: [],
       playerList: [],
+      serverPingMs: null,
       maxPlayers: 70,
       pid: null,
       startedAt: 0,
@@ -329,6 +330,7 @@ function publicServer(server, rcon = null) {
     players: runtime.players,
     playerNames: Array.isArray(runtime.playerNames) ? runtime.playerNames : [],
     playerList: Array.isArray(runtime.playerList) ? runtime.playerList : [],
+    serverPingMs: runtime.serverPingMs == null ? null : Number(runtime.serverPingMs),
     maxPlayers: runtime.maxPlayers || parseMaxPlayers(server.launchArgs),
     pid: runtime.pid,
     backupInProgress: Boolean(runtime.backupInProgress),
@@ -1033,6 +1035,43 @@ async function queryLocalA2s(port) {
   return null;
 }
 
+async function measureServerPingMs(server) {
+  const queryPort = parseQueryPort(server.launchArgs);
+  const hosts = ["127.0.0.1"];
+  const lan = lanAddresses();
+  if (lan[0]) hosts.push(lan[0]);
+  for (const host of hosts) {
+    const started = Date.now();
+    const info = await queryA2sInfo(host, queryPort, 700);
+    if (info) return Math.max(1, Date.now() - started);
+  }
+
+  // Fallback: TCP connect latency to this profile's RCON port.
+  try {
+    const settings = await readRconSettings(gusIniPath(server), server.launchArgs);
+    if (!settings.enabled || !settings.port) return null;
+    return await new Promise(resolve => {
+      const started = Date.now();
+      const socket = net.connect({ host: "127.0.0.1", port: settings.port });
+      const done = value => {
+        try { socket.destroy(); } catch { /* ignore */ }
+        resolve(value);
+      };
+      socket.setTimeout(800, () => done(null));
+      socket.on("connect", () => done(Math.max(1, Date.now() - started)));
+      socket.on("error", () => done(null));
+    });
+  } catch {
+    return null;
+  }
+}
+
+function withPlayerPing(players, pingMs) {
+  const list = Array.isArray(players) ? players : [];
+  if (pingMs == null) return list.map(p => ({ ...p, pingMs: p.pingMs ?? null }));
+  return list.map(p => ({ ...p, pingMs }));
+}
+
 async function readLogTail(filePath, maxBytes = 256 * 1024) {
   if (!(await pathExists(filePath))) return "";
   const fh = await open(filePath, "r");
@@ -1127,13 +1166,19 @@ async function refreshPlayersForRunningServers() {
   });
   // Sequential — multiple maps each have their own RCON port (32300+).
   for (const server of running) {
+    const pingMs = await measureServerPingMs(server);
     const sample = await queryPlayersViaRcon(server);
-    if (!sample) continue;
+    if (!sample && pingMs == null) continue;
     const runtime = runtimeOf(server.id);
-    runtime.players = sample.count;
-    runtime.playerNames = sample.names;
-    runtime.playerList = sample.players || [];
-    runtime.availability = "Online";
+    if (pingMs != null) runtime.serverPingMs = pingMs;
+    if (sample) {
+      runtime.players = sample.count;
+      runtime.playerNames = sample.names;
+      runtime.playerList = withPlayerPing(sample.players || [], runtime.serverPingMs);
+      runtime.availability = "Online";
+    } else if (Array.isArray(runtime.playerList) && runtime.playerList.length) {
+      runtime.playerList = withPlayerPing(runtime.playerList, runtime.serverPingMs);
+    }
   }
 }
 
@@ -1167,11 +1212,15 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
     }
 
     // ASA A2S player counts are often wrong — always prefer per-server RCON ListPlayers.
+    const pingMs = await measureServerPingMs(server);
+    if (pingMs != null) runtime.serverPingMs = pingMs;
     const sample = await queryPlayersViaRcon(server);
     if (sample) {
       runtime.players = sample.count;
       runtime.playerNames = sample.names;
-      runtime.playerList = sample.players || [];
+      runtime.playerList = withPlayerPing(sample.players || [], runtime.serverPingMs);
+    } else if (Array.isArray(runtime.playerList) && runtime.playerList.length) {
+      runtime.playerList = withPlayerPing(runtime.playerList, runtime.serverPingMs);
     }
 
     const ready = await detectReadyFromLogs(server.install);
@@ -1191,6 +1240,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
     runtime.players = 0;
     runtime.playerNames = [];
     runtime.playerList = [];
+    runtime.serverPingMs = null;
     runtime.startedAt = 0;
   }
 }
@@ -2149,14 +2199,17 @@ async function handleApi(req, res, url) {
       const reply = await rconExec("127.0.0.1", settings.port, settings.password, "ListPlayers", 10000);
       const parsed = parseListPlayers(reply);
       const runtime = runtimeOf(server.id);
+      const pingMs = await measureServerPingMs(server);
+      if (pingMs != null) runtime.serverPingMs = pingMs;
       runtime.players = parsed.count;
       runtime.playerNames = parsed.names;
-      runtime.playerList = parsed.players || [];
+      runtime.playerList = withPlayerPing(parsed.players || [], runtime.serverPingMs);
       return sendJson(res, 200, {
         ok: true,
         port: settings.port,
         count: parsed.count,
-        players: parsed.players || [],
+        players: runtime.playerList,
+        serverPingMs: runtime.serverPingMs,
         raw: parsed.raw || ""
       });
     } catch (err) {

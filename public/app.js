@@ -337,6 +337,43 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+function formatPingMs(ms) {
+  if (ms == null || ms === "") return "";
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n < 0) return "";
+  return `${Math.round(n)} ms`;
+}
+
+function playerRosterEntries(server) {
+  if (Array.isArray(server.playerList) && server.playerList.length) {
+    return server.playerList.map(p => ({
+      name: p?.name || "Unknown",
+      pingMs: p?.pingMs ?? server.serverPingMs ?? null
+    }));
+  }
+  const names = Array.isArray(server.playerNames) ? server.playerNames : [];
+  return names.map(name => ({
+    name,
+    pingMs: server.serverPingMs ?? null
+  }));
+}
+
+function playerNameHtml(name, pingMs) {
+  const ping = formatPingMs(pingMs);
+  const pingPart = ping
+    ? ` <span class="player-name-sep">·</span> <span class="player-ping">${escapeHtml(ping)}</span>`
+    : "";
+  return `<div class="player-name">${escapeHtml(name || "Unknown")}${pingPart}</div>`;
+}
+
+function playerRosterHtml(server) {
+  const entries = playerRosterEntries(server);
+  if (!entries.length) {
+    return `<div class="player-names-empty">${Number(server.players) > 0 ? "Names updating…" : "No players online"}</div>`;
+  }
+  return entries.map(p => playerNameHtml(p.name, p.pingMs)).join("");
+}
+
 function toast(message, type = "info") {
   const el = document.createElement("div");
   el.className = `toast ${type}`;
@@ -557,9 +594,7 @@ function renderServer(server) {
               <span>Players</span>
               <strong>${Number(server.players) || 0} / ${Number(server.maxPlayers) || 70}</strong>
               <div class="player-names" data-player-names>
-                ${Array.isArray(server.playerNames) && server.playerNames.length
-                  ? server.playerNames.map(name => `<div class="player-name">${escapeHtml(name)}</div>`).join("")
-                  : `<div class="player-names-empty">${Number(server.players) > 0 ? "Names updating…" : "No players online"}</div>`}
+                ${playerRosterHtml(server)}
               </div>
             </article>
             <article class="stat-card ${firewallClass(server.firewallStatus)}">
@@ -781,12 +816,7 @@ function updateLiveStats(server) {
     if (strong) strong.textContent = `${playerCount} / ${Number(server.maxPlayers) || 70}`;
     setStatTone(cards[2], playerCount > 0 ? "good" : "");
     const namesEl = cards[2].querySelector("[data-player-names]");
-    if (namesEl) {
-      const names = Array.isArray(server.playerNames) ? server.playerNames : [];
-      namesEl.innerHTML = names.length
-        ? names.map(name => `<div class="player-name">${escapeHtml(name)}</div>`).join("")
-        : `<div class="player-names-empty">${playerCount > 0 ? "Names updating…" : "No players online"}</div>`;
-    }
+    if (namesEl) namesEl.innerHTML = playerRosterHtml(server);
   }
   if (cards[3]) {
     const strong = cards[3].querySelector("strong");
@@ -1173,12 +1203,18 @@ function renderPlayersDialogList(players) {
     list.innerHTML = `<div class="players-dialog-empty">No players online</div>`;
     return;
   }
-  list.innerHTML = rows.map((player, idx) => `
+  list.innerHTML = rows.map((player, idx) => {
+    const ping = formatPingMs(player.pingMs);
+    const pingPart = ping
+      ? ` <span class="player-name-sep">·</span> <span class="player-ping">${escapeHtml(ping)}</span>`
+      : "";
+    return `
     <div class="player-row" data-player-index="${idx}" data-player-id="${escapeHtml(player.id || "")}" data-player-name="${escapeHtml(player.name || "")}">
-      <div class="player-row-name">${escapeHtml(player.name || "Unknown")}</div>
+      <div class="player-row-name">${escapeHtml(player.name || "Unknown")}${pingPart}</div>
       <div class="player-row-id">${escapeHtml(player.id || "No EOS/Steam ID in ListPlayers reply")}</div>
     </div>
-  `).join("");
+  `;
+  }).join("");
 }
 
 async function refreshPlayersDialog() {
@@ -1191,7 +1227,8 @@ async function refreshPlayersDialog() {
       ...state.servers[idx],
       players: data.count || 0,
       playerNames: (data.players || []).map(p => p.name),
-      playerList: data.players || []
+      playerList: data.players || [],
+      serverPingMs: data.serverPingMs == null ? state.servers[idx].serverPingMs : data.serverPingMs
     };
     updateLiveStats(state.servers[idx]);
   }
