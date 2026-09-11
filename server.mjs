@@ -335,7 +335,7 @@ function publicServer(server, rcon = null) {
 
 async function getRconPublic(server) {
   try {
-    const settings = await readRconSettings(gusIniPath(server));
+    const settings = await readRconSettings(gusIniPath(server), server.launchArgs);
     return {
       enabled: settings.enabled,
       port: settings.port,
@@ -408,18 +408,139 @@ async function updateSessionName(iniPath, sessionName) {
   await writeFile(iniPath, next.join("\n"), "utf8");
 }
 
-async function readRconSettings(iniPath) {
+async function upsertIniSectionKeys(iniPath, sectionName, values) {
+  await mkdir(path.dirname(iniPath), { recursive: true });
+  let raw = "";
+  try {
+    raw = await readFile(iniPath, "utf8");
+  } catch {
+    raw = "";
+  }
+  const lines = raw ? raw.split(/\r?\n/) : [];
+  const sectionHeader = `[${sectionName}]`;
+  const sectionLower = sectionHeader.toLowerCase();
+  let start = lines.findIndex(line => line.trim().toLowerCase() === sectionLower);
+  if (start < 0) {
+    if (lines.length && lines[lines.length - 1].trim() !== "") lines.push("");
+    lines.push(sectionHeader);
+    start = lines.length - 1;
+  }
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^\s*\[[^\]]+\]\s*$/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+
+  const keys = Object.keys(values);
+  const seen = new Set();
+  for (let i = start + 1; i < end; i++) {
+    const match = lines[i].match(/^\s*([^=]+)=(.*)$/);
+    if (!match) continue;
+    const key = match[1].trim();
+    const hit = keys.find(k => k.toLowerCase() === key.toLowerCase());
+    if (!hit) continue;
+    lines[i] = `${hit}=${values[hit]}`;
+    seen.add(hit.toLowerCase());
+  }
+  let insertAt = end;
+  for (const key of keys) {
+    if (seen.has(key.toLowerCase())) continue;
+    lines.splice(insertAt, 0, `${key}=${values[key]}`);
+    insertAt += 1;
+  }
+  await writeFile(iniPath, lines.join("\n"), "utf8");
+}
+
+function pickRconPort(server) {
+  const args = String(server.launchArgs || "");
+  const fromArgs = args.match(/RCONPort=(\d+)/i);
+  if (fromArgs) return Number(fromArgs[1]);
+  const query = parseQueryPort(args);
+  if (query) return query; // TCP RCON can share the query port number (query is UDP)
+  const game = parseGamePort(args);
+  if (game) return game + 2;
+  return 27020;
+}
+
+function ensureLaunchArgsRcon(launchArgs, port) {
+  let args = String(launchArgs || "").trim();
+  if (!args) args = `?listen?RCONEnabled=True?RCONPort=${port}`;
+  if (/RCONEnabled=/i.test(args)) {
+    args = args.replace(/RCONEnabled=[^?\s]*/ig, "RCONEnabled=True");
+  } else if (/\?listen/i.test(args)) {
+    args = args.replace(/\?listen/i, "?listen?RCONEnabled=True");
+  } else if (args.includes("?")) {
+    args = args.replace("?", "?RCONEnabled=True?");
+  } else {
+    args = `${args}?RCONEnabled=True`;
+  }
+  if (/RCONPort=\d+/i.test(args)) {
+    args = args.replace(/RCONPort=\d+/ig, `RCONPort=${port}`);
+  } else {
+    args = args.replace(/RCONEnabled=True/i, `RCONEnabled=True?RCONPort=${port}`);
+  }
+  return args;
+}
+
+async function ensureRconConfig(server) {
+  const iniPath = gusIniPath(server);
+  const existing = await readRconSettings(iniPath);
+  const port = pickRconPort(server);
+  const password = existing.password;
+
+  await upsertIniSectionKeys(iniPath, "ServerSettings", {
+    RCONEnabled: "True",
+    RCONPort: String(port),
+    ...(password ? { ServerAdminPassword: password } : {})
+  });
+
+  const nextArgs = ensureLaunchArgsRcon(server.launchArgs, port);
+  if (nextArgs !== server.launchArgs) {
+    server.launchArgs = nextArgs;
+    scheduleSave();
+  }
+
+  if (!password) {
+    appendConsoleLog(
+      server.id,
+      "RCON enabled, but ServerAdminPassword is empty in GameUserSettings.ini — set a password then restart to use ListPlayers/chat.",
+      "error"
+    );
+  } else {
+    appendConsoleLog(server.id, `RCON configured on TCP port ${port}.`, "system");
+  }
+
+  return { enabled: true, port, password };
+}
+
+function formatRconConnectError(err, port) {
+  const msg = String(err?.message || err || "RCON failed");
+  if (/ECONNREFUSED/i.test(msg)) {
+    return `RCON is not listening on 127.0.0.1:${port}. In GameUserSettings.ini set RCONEnabled=True, RCONPort=${port}, and ServerAdminPassword, then fully Stop + Start this ARK server (not just the manager).`;
+  }
+  return msg;
+}
+
+async function readRconSettings(iniPath, launchArgs = "") {
   const defaults = { enabled: false, port: 27020, password: "" };
-  if (!(await pathExists(iniPath))) return defaults;
-  const raw = await readFile(iniPath, "utf8");
-  const enabled = /RCONEnabled\s*=\s*True/i.test(raw);
-  const portMatch = raw.match(/RCONPort\s*=\s*(\d+)/i);
-  const passMatch = raw.match(/ServerAdminPassword\s*=\s*(.*)$/im);
-  return {
-    enabled,
-    port: portMatch ? Number(portMatch[1]) : 27020,
-    password: passMatch ? String(passMatch[1]).trim() : ""
-  };
+  let enabled = defaults.enabled;
+  let port = defaults.port;
+  let password = defaults.password;
+  if (await pathExists(iniPath)) {
+    const raw = await readFile(iniPath, "utf8");
+    enabled = /RCONEnabled\s*=\s*True/i.test(raw);
+    const portMatch = raw.match(/RCONPort\s*=\s*(\d+)/i);
+    const passMatch = raw.match(/ServerAdminPassword\s*=\s*(.*)$/im);
+    if (portMatch) port = Number(portMatch[1]);
+    if (passMatch) password = String(passMatch[1]).trim();
+  }
+  const args = String(launchArgs || "");
+  if (/RCONEnabled\s*=\s*True/i.test(args)) enabled = true;
+  const argPort = args.match(/RCONPort=(\d+)/i);
+  if (argPort) port = Number(argPort[1]);
+  return { enabled, port, password };
 }
 
 async function readRconPort(iniPath) {
@@ -602,7 +723,7 @@ async function ensureChatPoll(server) {
     if (!runtime.consoleStreams.size) return;
     if (String(runtime.status).toLowerCase() !== "running") return;
     try {
-      const settings = await readRconSettings(gusIniPath(server));
+      const settings = await readRconSettings(gusIniPath(server), server.launchArgs);
       if (!settings.enabled || !settings.password) return;
       const chat = await rconExec("127.0.0.1", settings.port, settings.password, "GetChat", 4000);
       if (!chat || chat === runtime.lastChatRaw) return;
@@ -820,7 +941,7 @@ function countPlayersFromListPlayers(text) {
 
 async function queryPlayerCountViaRcon(server) {
   try {
-    const settings = await readRconSettings(gusIniPath(server));
+    const settings = await readRconSettings(gusIniPath(server), server.launchArgs);
     if (!settings.enabled || !settings.password) return null;
     const reply = await rconExec("127.0.0.1", settings.port, settings.password, "ListPlayers", 3500);
     return countPlayersFromListPlayers(reply);
@@ -1112,6 +1233,7 @@ async function startServer(server, { applyFirewall = false } = {}) {
 
   await mkdir(path.dirname(gusIniPath(server)), { recursive: true });
   await updateSessionName(gusIniPath(server), server.profile);
+  await ensureRconConfig(server);
 
   const shouldApplyFirewall = Boolean(server.firewallAutoApproved || applyFirewall);
   if (shouldApplyFirewall) {
@@ -1830,7 +1952,7 @@ async function handleApi(req, res, url) {
     if (!command) return sendJson(res, 400, { error: "Command is required" });
     if (asChat) command = `ServerChat ${command}`;
 
-    const settings = await readRconSettings(gusIniPath(server));
+    const settings = await readRconSettings(gusIniPath(server), server.launchArgs);
     if (!settings.enabled) {
       return sendJson(res, 400, { error: "RCON is disabled. Set RCONEnabled=True in GameUserSettings.ini" });
     }
@@ -1848,8 +1970,9 @@ async function handleApi(req, res, url) {
       else appendConsoleLog(server.id, "(empty response — normal for chat/broadcast)", "system");
       return sendJson(res, 200, { ok: true, reply: reply || "" });
     } catch (err) {
-      appendConsoleLog(server.id, err.message, "error");
-      return sendJson(res, 502, { error: err.message });
+      const friendly = formatRconConnectError(err, settings.port);
+      appendConsoleLog(server.id, friendly, "error");
+      return sendJson(res, 502, { error: friendly });
     }
   }
 
