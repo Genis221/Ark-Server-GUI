@@ -1274,6 +1274,23 @@ async function terminatePid(pid) {
   try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
 }
 
+async function waitForInstallIdle(install, timeoutMs = 45000) {
+  if (!install) return true;
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    processCache.at = 0;
+    const match = await findProcessForInstall(install);
+    if (!match) return true;
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  processCache.at = 0;
+  return !(await findProcessForInstall(install));
+}
+
+async function delay(ms) {
+  await new Promise(r => setTimeout(r, ms));
+}
+
 function runCaptured(command, args, timeoutMs = 30000) {
   return new Promise(resolve => {
     const child = spawn(command, args, {
@@ -1531,12 +1548,19 @@ async function stopServer(server, { copyLog = true } = {}) {
   const match = await findProcessForInstall(server.install);
   const pid = match?.pid || runtime.pid;
   if (pid) await terminatePid(pid);
+  const idle = await waitForInstallIdle(server.install);
+  if (!idle) {
+    appendConsoleLog(server.id, "Warning: server process still present after stop request.", "error");
+  }
 
   runtime.status = "stopped";
   runtime.pid = null;
   runtime.startedAt = 0;
   runtime.availability = "Offline";
   runtime.players = 0;
+  runtime.playerNames = [];
+  runtime.playerList = [];
+  runtime.serverPingMs = null;
   addActivity(`Stopped ${server.profile}`, "info");
   processCache.at = 0;
   stopLogWatch(server.id);
@@ -1767,6 +1791,8 @@ async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
 
     await refreshRuntime(server, { deep: true });
     const payload = { ...publicServer(server), needsRepair: Boolean(runtime.needsRepair), updateExitCode: result.code };
+    // Clear updating before onComplete — startServer rejects while updating is true.
+    runtime.updating = false;
     if (typeof onComplete === "function" && !hit06 && result.code === 0) {
       try { await onComplete(); } catch (err) { addActivity(err.message, "error"); }
     }
@@ -1928,7 +1954,7 @@ async function automationTick() {
             if (server.autostartUpdate) {
               await runSteamUpdate(server, {
                 onComplete: async () => {
-                  await new Promise(r => setTimeout(r, 5000));
+                  await delay(5000);
                   await startServer(server);
                 }
               });
@@ -1948,12 +1974,14 @@ async function automationTick() {
           try {
             await stopServer(server);
             if (server.performUpdate) {
-              await runSteamUpdate(server, {
-                onComplete: server.thenRestart
-                  ? async () => { await startServer(server); }
-                  : undefined
-              });
-            } else if (server.thenRestart) {
+              try {
+                await runSteamUpdate(server);
+              } catch (err) {
+                addActivity(`Scheduled update failed for ${server.profile}: ${err.message}`, "error");
+              }
+            }
+            if (server.thenRestart) {
+              await delay(3000);
               await startServer(server);
             }
           } catch (err) {
