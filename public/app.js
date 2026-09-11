@@ -253,9 +253,14 @@ function renderServer(server) {
               <span>Availability</span>
               <strong>${escapeHtml(server.availability || "Offline")}</strong>
             </article>
-            <article class="stat-card ${Number(server.players) > 0 ? "good" : ""}">
+            <article class="stat-card players-card ${Number(server.players) > 0 ? "good" : ""}">
               <span>Players</span>
               <strong>${Number(server.players) || 0} / ${Number(server.maxPlayers) || 70}</strong>
+              <div class="player-names" data-player-names>
+                ${Array.isArray(server.playerNames) && server.playerNames.length
+                  ? server.playerNames.map(name => `<div class="player-name">${escapeHtml(name)}</div>`).join("")
+                  : `<div class="player-names-empty">${Number(server.players) > 0 ? "Names updating…" : "No players online"}</div>`}
+              </div>
             </article>
             <article class="stat-card ${firewallClass(server.firewallStatus)}">
               <span>Firewall</span>
@@ -472,6 +477,13 @@ function updateLiveStats(server) {
     const strong = cards[2].querySelector("strong");
     if (strong) strong.textContent = `${playerCount} / ${Number(server.maxPlayers) || 70}`;
     setStatTone(cards[2], playerCount > 0 ? "good" : "");
+    const namesEl = cards[2].querySelector("[data-player-names]");
+    if (namesEl) {
+      const names = Array.isArray(server.playerNames) ? server.playerNames : [];
+      namesEl.innerHTML = names.length
+        ? names.map(name => `<div class="player-name">${escapeHtml(name)}</div>`).join("")
+        : `<div class="player-names-empty">${playerCount > 0 ? "Names updating…" : "No players online"}</div>`;
+    }
   }
   if (cards[3]) {
     const strong = cards[3].querySelector("strong");

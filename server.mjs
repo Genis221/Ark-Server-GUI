@@ -194,6 +194,7 @@ function runtimeOf(id) {
       status: "stopped",
       availability: "Offline",
       players: 0,
+      playerNames: [],
       maxPlayers: 70,
       pid: null,
       startedAt: 0,
@@ -214,6 +215,7 @@ function runtimeOf(id) {
   const runtime = runtimes.get(id);
   runtime.consoleLogs ||= [];
   runtime.consoleStreams ||= new Set();
+  runtime.playerNames ||= [];
   return runtime;
 }
 
@@ -323,6 +325,7 @@ function publicServer(server, rcon = null) {
     status: runtime.updating ? "Updating" : runtime.status,
     availability: runtime.availability,
     players: runtime.players,
+    playerNames: Array.isArray(runtime.playerNames) ? runtime.playerNames : [],
     maxPlayers: runtime.maxPlayers || parseMaxPlayers(server.launchArgs),
     pid: runtime.pid,
     backupInProgress: Boolean(runtime.backupInProgress),
@@ -575,13 +578,15 @@ function decodeRconPackets(buffer) {
   return { packets, rest: buffer.subarray(offset) };
 }
 
-function rconExec(host, port, password, command, timeoutMs = 6000) {
+function rconExec(host, port, password, command, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
     const socket = net.connect({ host, port });
     let buffer = Buffer.alloc(0);
     let authed = false;
     let settled = false;
     let response = "";
+    let sawEnd = false;
+    let settleTimer = null;
     const authId = 1;
     const cmdId = 2;
     const endId = 3;
@@ -590,13 +595,20 @@ function rconExec(host, port, password, command, timeoutMs = 6000) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (settleTimer) clearTimeout(settleTimer);
       try { socket.destroy(); } catch { /* ignore */ }
       if (err) reject(err);
       else resolve(value);
     };
 
+    const scheduleSettle = () => {
+      if (settleTimer) clearTimeout(settleTimer);
+      // ASA often sends the multipacket "end" marker before the ListPlayers body.
+      settleTimer = setTimeout(() => finish(null, cleanRconBody(response)), 350);
+    };
+
     const timer = setTimeout(() => {
-      if (authed) finish(null, response.trim());
+      if (authed) finish(null, cleanRconBody(response));
       else finish(new Error("RCON timed out"));
     }, timeoutMs);
 
@@ -618,19 +630,64 @@ function rconExec(host, port, password, command, timeoutMs = 6000) {
           }
           continue;
         }
-        if (packet.id === endId) return finish(null, response.trim());
-        if (packet.id === cmdId || packet.type === 0) response += packet.body;
+        if (packet.id === endId) {
+          sawEnd = true;
+          // Keep waiting briefly for late command body packets from ASA.
+          scheduleSettle();
+          continue;
+        }
+        if (packet.id === cmdId || packet.id === 0 || packet.type === 0) {
+          response += packet.body || "";
+          if (sawEnd) scheduleSettle();
+        }
       }
     });
 
     socket.on("error", err => finish(err));
     socket.on("close", () => {
       if (!settled) {
-        if (authed) finish(null, response.trim());
+        if (authed) finish(null, cleanRconBody(response));
         else finish(new Error("RCON connection closed"));
       }
     });
   });
+}
+
+function cleanRconBody(text) {
+  return String(text || "")
+    .replace(/\u0000/g, "")
+    .replace(/\r/g, "")
+    .trim();
+}
+
+function parseListPlayers(text) {
+  const raw = cleanRconBody(text);
+  if (!raw || /no players/i.test(raw)) return { count: 0, names: [], raw };
+  const names = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    // ASA: "0. Nickname, 00025dbef45f4f10a4d9d69b041389f2" (EOS id)
+    // ASE: "0. Nickname, 76561198..." (Steam id)
+    const match = trimmed.match(/^\d+\.\s*(.+?)\s*,\s*\S+/);
+    if (match) {
+      names.push(match[1].trim());
+      continue;
+    }
+    const loose = trimmed.match(/^\d+\.\s*(.+)$/);
+    if (loose) names.push(loose[1].replace(/,\s*$/, "").trim());
+  }
+  return { count: names.length, names, raw };
+}
+
+function formatPlayerListMessage(parsed) {
+  if (parsed.count > 0) {
+    const lines = parsed.names.map((name, i) => `${i}. ${name}`);
+    return `Players online (${parsed.count}):\n${lines.join("\n")}`;
+  }
+  if (/no players/i.test(parsed.raw || "")) return "No players connected.";
+  if (parsed.raw) return `ListPlayers raw reply:\n${parsed.raw}`;
+  return "ListPlayers returned empty. If you are in-game, wait a few seconds and try again.";
 }
 
 function appendConsoleLog(serverId, message, level = "info") {
@@ -931,20 +988,15 @@ async function findProcessForInstall(install, procs = null) {
 }
 
 function countPlayersFromListPlayers(text) {
-  const raw = String(text || "").trim();
-  if (!raw || /no players/i.test(raw)) return 0;
-  const lines = raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-  const numbered = lines.filter(line => /^\d+\./.test(line));
-  if (numbered.length) return numbered.length;
-  return lines.filter(line => !/^(listplayers|players on server)/i.test(line)).length;
+  return parseListPlayers(text).count;
 }
 
-async function queryPlayerCountViaRcon(server) {
+async function queryPlayersViaRcon(server) {
   try {
     const settings = await readRconSettings(gusIniPath(server), server.launchArgs);
     if (!settings.enabled || !settings.password) return null;
-    const reply = await rconExec("127.0.0.1", settings.port, settings.password, "ListPlayers", 3500);
-    return countPlayersFromListPlayers(reply);
+    const reply = await rconExec("127.0.0.1", settings.port, settings.password, "ListPlayers", 8000);
+    return parseListPlayers(reply);
   } catch {
     return null;
   }
@@ -976,15 +1028,17 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
     const info = await queryLocalA2s(parseQueryPort(server.launchArgs));
     if (info) {
       runtime.availability = "Online";
-      runtime.players = Number(info.players) || 0;
       runtime.maxPlayers = Number(info.max_players) || runtime.maxPlayers;
-      return;
     }
 
-    // ASA often ignores A2S — fall back to RCON ListPlayers for live counts.
-    const rconPlayers = await queryPlayerCountViaRcon(server);
-    if (rconPlayers != null) {
-      runtime.players = rconPlayers;
+    // ASA A2S player counts are often 0 even with people online — prefer RCON names/count.
+    const sample = await queryPlayersViaRcon(server);
+    if (sample) {
+      runtime.players = sample.count;
+      runtime.playerNames = sample.names;
+    } else if (info && Number.isFinite(Number(info.players))) {
+      runtime.players = Number(info.players) || 0;
+      if (!runtime.players) runtime.playerNames = [];
     }
 
     const ready = await detectReadyFromLogs(server.install);
@@ -1002,6 +1056,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
     runtime.pid = null;
     runtime.availability = "Offline";
     runtime.players = 0;
+    runtime.playerNames = [];
     runtime.startedAt = 0;
   }
 }
@@ -1965,7 +2020,20 @@ async function handleApi(req, res, url) {
 
     appendConsoleLog(server.id, `> ${command}`, "command");
     try {
-      const reply = await rconExec("127.0.0.1", settings.port, settings.password, command);
+      const reply = await rconExec("127.0.0.1", settings.port, settings.password, command, 10000);
+      if (/^listplayers$/i.test(command)) {
+        const parsed = parseListPlayers(reply);
+        const runtime = runtimeOf(server.id);
+        runtime.players = parsed.count;
+        runtime.playerNames = parsed.names;
+        appendConsoleLog(server.id, formatPlayerListMessage(parsed), parsed.count ? "rcon" : "system");
+        return sendJson(res, 200, {
+          ok: true,
+          reply: reply || "",
+          players: parsed.count,
+          playerNames: parsed.names
+        });
+      }
       if (reply) appendConsoleLog(server.id, reply, "rcon");
       else appendConsoleLog(server.id, "(empty response — normal for chat/broadcast)", "system");
       return sendJson(res, 200, { ok: true, reply: reply || "" });

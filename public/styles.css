@@ -524,6 +524,24 @@ button { cursor: pointer; }
 .stat-card.warn strong::before { background: var(--warn); box-shadow: 0 0 0 3px rgba(224,177,74,.16); }
 .stat-card.bad strong { color: #f07178; }
 .stat-card.bad strong::before { background: var(--red); box-shadow: 0 0 0 3px var(--red-dim); }
+.player-names {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+  max-height: 120px;
+  overflow: auto;
+}
+.player-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+}
+.player-names-empty {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+}
 [data-theme="light"] .stat-card.good strong { color: #187a42; }
 [data-theme="light"] .stat-card.warn strong { color: #9a6a12; }
 [data-theme="light"] .stat-card.bad strong { color: #b4383d; }
