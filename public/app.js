@@ -906,6 +906,7 @@ async function openPlayersDialog(server) {
   if (title) title.textContent = `Online Players — ${server.profile}`;
   renderPlayersDialogList(server.playerList || []);
   playersDialog?.showModal();
+  hidePlayerContextMenu();
   try {
     await refreshPlayersDialog();
   } catch (err) {
@@ -981,6 +982,8 @@ async function runPlayerContextAction(cmd) {
     toast(err.message, "error");
   }
 }
+
+playersDialog?.addEventListener("close", () => hidePlayerContextMenu());
 
 document.getElementById("players-refresh")?.addEventListener("click", async () => {
   try {

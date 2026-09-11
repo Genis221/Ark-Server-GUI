@@ -138,20 +138,19 @@
           <div class="players-dialog-empty">No players online</div>
         </div>
       </div>
+      <div id="player-context-menu" class="player-context-menu" hidden>
+        <button type="button" data-player-cmd="kick">Kick</button>
+        <button type="button" data-player-cmd="ban">Ban</button>
+        <button type="button" data-player-cmd="unban">Unban</button>
+        <button type="button" data-player-cmd="kill">Kill</button>
+        <button type="button" data-player-cmd="message">Message…</button>
+        <button type="button" data-player-cmd="whitelist">Whitelist</button>
+        <button type="button" data-player-cmd="unwhitelist">Remove whitelist</button>
+        <button type="button" data-player-cmd="makeadmin">Make server admin</button>
+        <button type="button" data-player-cmd="copyid">Copy EOS / Steam ID</button>
+        <button type="button" data-player-cmd="copyname">Copy name</button>
+      </div>
     </dialog>
-
-    <div id="player-context-menu" class="player-context-menu" hidden>
-      <button type="button" data-player-cmd="kick">Kick</button>
-      <button type="button" data-player-cmd="ban">Ban</button>
-      <button type="button" data-player-cmd="unban">Unban</button>
-      <button type="button" data-player-cmd="kill">Kill</button>
-      <button type="button" data-player-cmd="message">Message…</button>
-      <button type="button" data-player-cmd="whitelist">Whitelist</button>
-      <button type="button" data-player-cmd="unwhitelist">Remove whitelist</button>
-      <button type="button" data-player-cmd="makeadmin">Make server admin</button>
-      <button type="button" data-player-cmd="copyid">Copy EOS / Steam ID</button>
-      <button type="button" data-player-cmd="copyname">Copy name</button>
-    </div>
 
     <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
     <script type="module" src="/app.js"></script>
