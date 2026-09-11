@@ -965,15 +965,36 @@ async function runPlayerContextAction(cmd) {
       const label = cmd === "ban" ? "Ban" : cmd === "kick" ? "Kick" : "Kill";
       if (!window.confirm(`${label} ${player.name || player.id}?`)) return;
     }
+    let ue4Id = "";
+    if (cmd === "kill") {
+      // ListPlayers gives EOS IDs on ASA; KillPlayer needs numeric UE4 IDs.
+      if (!/^\d{3,12}$/.test(player.id || "")) {
+        ue4Id = window.prompt(
+          `KillPlayer needs the numeric UE4 player ID (not the EOS ID).\n\n${player.name}\nEOS: ${player.id}\n\nEnter UE4 ID to kill in-world, or Cancel and use Kick to disconnect:`,
+          ""
+        );
+        if (ue4Id == null || !String(ue4Id).trim()) return;
+        if (!/^\d{3,12}$/.test(String(ue4Id).trim())) {
+          throw new Error("UE4 player ID must be numeric");
+        }
+      }
+    }
     if (!player.id && cmd !== "copyname") {
       throw new Error("This player has no EOS/Steam ID in ListPlayers — cannot run that action");
     }
-    await api(`/api/servers/${server.id}/player-action`, {
+    const result = await api(`/api/servers/${server.id}/player-action`, {
       method: "POST",
-      body: { action: cmd, playerId: player.id, playerName: player.name }
+      body: {
+        action: cmd,
+        playerId: player.id,
+        playerName: player.name,
+        ...(ue4Id ? { ue4Id: String(ue4Id).trim() } : {})
+      }
     });
     if (cmd === "makeadmin") {
       toast(`${player.name} added to AllowedCheaterSteamIDs.txt`, "success");
+    } else if (result?.silentAck || /accepted by the server/i.test(result?.reply || "")) {
+      toast(`${cmd} accepted by server (no ARK output is normal)`, "success");
     } else {
       toast(`${cmd} sent for ${player.name || player.id}`, "success");
     }

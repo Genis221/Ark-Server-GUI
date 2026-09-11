@@ -533,6 +533,23 @@ async function ensureRconConfig(server) {
   return { enabled: true, port, password };
 }
 
+function normalizeRconReply(reply, { actionLabel = "Command" } = {}) {
+  const text = cleanRconBody(reply);
+  if (!text) return "";
+  if (/server received,\s*but no response/i.test(text)) {
+    return `${actionLabel} accepted by the server (ARK returned no output — normal for many RCON commands).`;
+  }
+  return text;
+}
+
+function isEosStyleId(id) {
+  return /^[0-9a-f]{32}$/i.test(String(id || "").trim());
+}
+
+function isUe4PlayerId(id) {
+  return /^\d{3,12}$/.test(String(id || "").trim());
+}
+
 function formatRconConnectError(err, port) {
   const msg = String(err?.message || err || "RCON failed");
   if (/ECONNREFUSED/i.test(msg)) {
@@ -2173,11 +2190,26 @@ async function handleApi(req, res, url) {
       return sendJson(res, 400, { error: "Player ID is required for this action" });
     }
 
+    let killTargetId = playerId;
+    if (playerAction === "kill") {
+      const ue4Id = String(body.ue4Id || "").trim();
+      if (isUe4PlayerId(playerId)) {
+        killTargetId = playerId;
+      } else if (isUe4PlayerId(ue4Id)) {
+        killTargetId = ue4Id;
+      } else if (isEosStyleId(playerId) || playerId) {
+        return sendJson(res, 400, {
+          error: "KillPlayer needs the numeric UE4 player ID, not the EOS ID from ListPlayers. Use Kick to disconnect by EOS ID, or enter a UE4 ID.",
+          needsUe4Id: true
+        });
+      }
+    }
+
     const commandMap = {
       kick: `KickPlayer ${playerId}`,
       ban: `BanPlayer ${playerId}`,
       unban: `UnbanPlayer ${playerId}`,
-      kill: `KillPlayer ${playerId}`,
+      kill: `KillPlayer ${killTargetId}`,
       whitelist: `AllowPlayerToJoinNoCheck ${playerId}`,
       unwhitelist: `DisallowPlayerToJoinNoCheck ${playerId}`,
       message: message
@@ -2190,8 +2222,9 @@ async function handleApi(req, res, url) {
     appendConsoleLog(server.id, `> ${command}`, "command");
     try {
       const reply = await rconExec("127.0.0.1", settings.port, settings.password, command, 10000);
-      if (reply) appendConsoleLog(server.id, reply, "rcon");
-      else appendConsoleLog(server.id, `(${playerAction}) sent for ${playerName || playerId}`, "system");
+      const nice = normalizeRconReply(reply, { actionLabel: playerAction });
+      if (nice) appendConsoleLog(server.id, nice, "system");
+      else appendConsoleLog(server.id, `${playerAction} sent for ${playerName || playerId}`, "system");
       if (["kick", "ban", "kill"].includes(playerAction)) {
         // Refresh list after removing someone.
         try {
@@ -2203,7 +2236,7 @@ async function handleApi(req, res, url) {
           runtime.playerList = parsed.players || [];
         } catch { /* ignore refresh errors */ }
       }
-      return sendJson(res, 200, { ok: true, reply: reply || "" });
+      return sendJson(res, 200, { ok: true, reply: nice || reply || "", silentAck: Boolean(nice && /accepted by the server/i.test(nice)) });
     } catch (err) {
       const friendly = formatRconConnectError(err, settings.port);
       appendConsoleLog(server.id, friendly, "error");
@@ -2247,9 +2280,9 @@ async function handleApi(req, res, url) {
           playerList: parsed.players || []
         });
       }
-      if (reply) appendConsoleLog(server.id, reply, "rcon");
+      if (reply) appendConsoleLog(server.id, normalizeRconReply(reply) || reply, /server received/i.test(reply) ? "system" : "rcon");
       else appendConsoleLog(server.id, "(empty response — normal for chat/broadcast)", "system");
-      return sendJson(res, 200, { ok: true, reply: reply || "" });
+      return sendJson(res, 200, { ok: true, reply: normalizeRconReply(reply) || reply || "" });
     } catch (err) {
       const friendly = formatRconConnectError(err, settings.port);
       appendConsoleLog(server.id, friendly, "error");
