@@ -426,11 +426,73 @@ button { cursor: pointer; }
 }
 .field input[readonly] { color: var(--muted); }
 .field input[data-field="launchArgs"],
+.field textarea[data-field="launchArgs"],
 .field input[data-field="install"],
 .field input[data-field="steamcmd"],
 .inline-input {
   font-family: var(--mono);
   font-size: 12px;
+}
+.launch-builder {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel-solid) 88%, var(--input-bg));
+}
+.launch-builder-head {
+  display: grid;
+  gap: 2px;
+}
+.launch-builder-head strong {
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+.launch-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+.launch-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+.launch-advanced {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.launch-advanced summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+.launch-advanced .field { margin-top: 8px; }
+.launch-builder textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 56px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--input-bg);
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+}
+.launch-builder select {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--input-bg);
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+}
+@media (max-width: 900px) {
+  .launch-grid { grid-template-columns: 1fr; }
 }
 .path-row, .inline-row {
   display: flex;

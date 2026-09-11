@@ -1,5 +1,305 @@
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const INTERVALS = ["30 mins", "1 hr", "2 hrs", "4 hrs", "6 hrs", "12 hrs", "24 hrs"];
+const ASA_MAPS = [
+  { value: "TheIsland_WP", label: "The Island" },
+  { value: "ScorchedEarth_WP", label: "Scorched Earth" },
+  { value: "Aberration_WP", label: "Aberration" },
+  { value: "Extinction_WP", label: "Extinction" },
+  { value: "TheCenter_WP", label: "The Center" },
+  { value: "Ragnarok_WP", label: "Ragnarok" },
+  { value: "Valguero_WP", label: "Valguero" },
+  { value: "LostColony_WP", label: "Lost Colony" },
+  { value: "Genesis_WP", label: "Genesis" },
+  { value: "Gen2_WP", label: "Genesis Part 2" },
+  { value: "Astraeos_WP", label: "Astraeos" },
+  { value: "Custom", label: "Custom map…" }
+];
+
+const KNOWN_QUERY_KEYS = new Set([
+  "listen",
+  "port",
+  "queryport",
+  "rconenabled",
+  "rconport",
+  "overrideofficialdifficulty",
+  "ballowflyerspeedleveling",
+  "allowteksuitpowersingenesis"
+]);
+
+const KNOWN_FLAG_KEYS = new Set([
+  "mods",
+  "forceallowcaveflyers",
+  "ballowflyerspeedleveling",
+  "winlivemaxplayers",
+  "clusterid",
+  "clusterdiroverride"
+]);
+
+function defaultLaunchParts() {
+  return {
+    map: "TheIsland_WP",
+    customMap: "",
+    port: "7777",
+    queryPort: "27015",
+    rconEnabled: true,
+    rconPort: "32300",
+    difficulty: "10.0",
+    allowFlyerSpeed: true,
+    allowTekGenesis: false,
+    mods: "",
+    forceCaveFlyers: false,
+    maxPlayers: "25",
+    clusterId: "",
+    clusterDir: "",
+    extraQuery: "",
+    extraFlags: ""
+  };
+}
+
+function parseFlagTokens(flagPart) {
+  const tokens = [];
+  // Quoted values may include Windows backslashes (e.g. ClusterDirOverride="D:\").
+  const re = /(?:^|\s)-([A-Za-z_][\w]*)(?:=(?:"([^"]*)"|(\S+)))?/g;
+  let match;
+  while ((match = re.exec(String(flagPart || "")))) {
+    tokens.push({
+      key: match[1],
+      value: match[2] != null ? match[2] : (match[3] ?? true)
+    });
+  }
+  return tokens;
+}
+
+function parseLaunchArgs(raw) {
+  const parts = defaultLaunchParts();
+  const text = String(raw || "").trim();
+  if (!text) return parts;
+
+  const flagStart = text.search(/\s+-[A-Za-z_]/);
+  let queryPart = text;
+  let flagPart = "";
+  if (flagStart >= 0) {
+    queryPart = text.slice(0, flagStart).trim();
+    flagPart = text.slice(flagStart).trim();
+  }
+
+  const qBits = queryPart.split("?");
+  const mapToken = (qBits[0] || "").trim();
+  if (mapToken) {
+    if (ASA_MAPS.some(m => m.value === mapToken)) parts.map = mapToken;
+    else {
+      parts.map = "Custom";
+      parts.customMap = mapToken;
+    }
+  }
+
+  const extras = [];
+  for (let i = 1; i < qBits.length; i++) {
+    const bit = qBits[i].trim();
+    if (!bit || bit.toLowerCase() === "listen") continue;
+    const eq = bit.indexOf("=");
+    const key = eq >= 0 ? bit.slice(0, eq) : bit;
+    const val = eq >= 0 ? bit.slice(eq + 1) : "True";
+    const kl = key.toLowerCase();
+    if (kl === "port") parts.port = val;
+    else if (kl === "queryport") parts.queryPort = val;
+    else if (kl === "rconenabled") parts.rconEnabled = /^true$/i.test(val);
+    else if (kl === "rconport") parts.rconPort = val;
+    else if (kl === "overrideofficialdifficulty") parts.difficulty = val;
+    else if (kl === "ballowflyerspeedleveling") parts.allowFlyerSpeed = /^true$/i.test(val);
+    else if (kl === "allowteksuitpowersingenesis") parts.allowTekGenesis = /^true$/i.test(val);
+    else if (!KNOWN_QUERY_KEYS.has(kl)) extras.push(bit);
+  }
+  parts.extraQuery = extras.join("?");
+
+  const unknownFlags = [];
+  for (const token of parseFlagTokens(flagPart)) {
+    const kl = token.key.toLowerCase();
+    if (kl === "mods") parts.mods = String(token.value === true ? "" : token.value);
+    else if (kl === "forceallowcaveflyers") parts.forceCaveFlyers = true;
+    else if (kl === "ballowflyerspeedleveling") parts.allowFlyerSpeed = /^true$/i.test(String(token.value));
+    else if (kl === "winlivemaxplayers") parts.maxPlayers = String(token.value);
+    else if (kl === "clusterid") parts.clusterId = String(token.value === true ? "" : token.value);
+    else if (kl === "clusterdiroverride") parts.clusterDir = String(token.value === true ? "" : token.value);
+    else if (!KNOWN_FLAG_KEYS.has(kl)) {
+      unknownFlags.push(token.value === true ? `-${token.key}` : `-${token.key}=${token.value}`);
+    }
+  }
+  parts.extraFlags = unknownFlags.join(" ");
+  return parts;
+}
+
+function buildLaunchArgs(parts) {
+  const p = { ...defaultLaunchParts(), ...parts };
+  const mapName = p.map === "Custom" ? (p.customMap || "TheIsland_WP") : p.map;
+  const query = [mapName, "listen"];
+  if (p.rconEnabled) {
+    query.push("RCONEnabled=True");
+    if (p.rconPort) query.push(`RCONPort=${String(p.rconPort).trim()}`);
+  }
+  if (p.port) query.push(`Port=${String(p.port).trim()}`);
+  if (p.queryPort) query.push(`QueryPort=${String(p.queryPort).trim()}`);
+  if (p.difficulty !== "" && p.difficulty != null) {
+    query.push(`OverrideOfficialDifficulty=${String(p.difficulty).trim()}`);
+  }
+  if (p.allowFlyerSpeed) query.push("bAllowFlyerSpeedLeveling=true");
+  if (p.allowTekGenesis) query.push("AllowTekSuitPowersInGenesis=True");
+  const extraQuery = String(p.extraQuery || "").trim();
+  if (extraQuery) {
+    for (const bit of extraQuery.split("?")) {
+      if (bit.trim()) query.push(bit.trim());
+    }
+  }
+
+  let out = query.join("?");
+  const flags = [];
+  if (String(p.mods || "").trim()) flags.push(`-Mods=${String(p.mods).trim()}`);
+  if (p.forceCaveFlyers) flags.push("-ForceAllowCaveFlyers");
+  if (p.allowFlyerSpeed) flags.push("-bAllowFlyerSpeedLeveling=true");
+  if (p.maxPlayers !== "" && p.maxPlayers != null) flags.push(`-WinLiveMaxPlayers=${String(p.maxPlayers).trim()}`);
+  if (String(p.clusterId || "").trim()) flags.push(`-clusterID=${String(p.clusterId).trim()}`);
+  if (String(p.clusterDir || "").trim()) {
+    const dir = String(p.clusterDir).trim().replace(/"/g, "");
+    flags.push(`-ClusterDirOverride="${dir}"`);
+  }
+  if (String(p.extraFlags || "").trim()) flags.push(String(p.extraFlags).trim());
+  if (flags.length) out += ` ${flags.join(" ")}`;
+  return out;
+}
+
+function launchMapOptions(selected, customMap) {
+  const values = ASA_MAPS.map(m => m.value);
+  const opts = ASA_MAPS.map(m => (
+    `<option value="${m.value}" ${selected === m.value ? "selected" : ""}>${escapeHtml(m.label)} (${escapeHtml(m.value)})</option>`
+  ));
+  if (selected && selected !== "Custom" && !values.includes(selected)) {
+    opts.unshift(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)}</option>`);
+  }
+  return opts.join("") + (selected === "Custom" && customMap
+    ? ""
+    : "");
+}
+
+function renderLaunchArgsEditor(server) {
+  const parts = parseLaunchArgs(server.launchArgs);
+  const showCustom = parts.map === "Custom";
+  return `
+    <div class="launch-builder" data-launch-builder>
+      <div class="launch-builder-head">
+        <strong>Launch Arguments</strong>
+        <span class="muted">Per-server settings — map, ports, mods, cluster</span>
+      </div>
+      <div class="launch-grid">
+        <label class="field">
+          <span>Map</span>
+          <select data-launch="map">${launchMapOptions(parts.map, parts.customMap)}</select>
+        </label>
+        <label class="field launch-custom-map" ${showCustom ? "" : "hidden"}>
+          <span>Custom map file</span>
+          <input data-launch="customMap" value="${escapeHtml(parts.customMap)}" placeholder="MyMap_WP" />
+        </label>
+        <label class="field">
+          <span>Game Port</span>
+          <input data-launch="port" type="number" min="1" max="65535" value="${escapeHtml(parts.port)}" />
+        </label>
+        <label class="field">
+          <span>Query Port</span>
+          <input data-launch="queryPort" type="number" min="1" max="65535" value="${escapeHtml(parts.queryPort)}" />
+        </label>
+        <label class="field">
+          <span>RCON</span>
+          <select data-launch="rconEnabled">
+            <option value="true" ${parts.rconEnabled ? "selected" : ""}>Enabled</option>
+            <option value="false" ${!parts.rconEnabled ? "selected" : ""}>Disabled</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>RCON Port</span>
+          <input data-launch="rconPort" type="number" min="1" max="65535" value="${escapeHtml(parts.rconPort)}" />
+        </label>
+        <label class="field">
+          <span>Max Players</span>
+          <input data-launch="maxPlayers" type="number" min="1" max="200" value="${escapeHtml(parts.maxPlayers)}" />
+        </label>
+        <label class="field">
+          <span>Official Difficulty</span>
+          <input data-launch="difficulty" value="${escapeHtml(parts.difficulty)}" placeholder="10.0" />
+        </label>
+        <label class="field">
+          <span>Cluster ID</span>
+          <input data-launch="clusterId" value="${escapeHtml(parts.clusterId)}" placeholder="221221221221" />
+        </label>
+        <label class="field">
+          <span>Cluster Dir Override</span>
+          <input data-launch="clusterDir" value="${escapeHtml(parts.clusterDir)}" placeholder="D:\\" />
+        </label>
+      </div>
+      <div class="launch-checks">
+        <label class="check-line"><input type="checkbox" data-launch="allowFlyerSpeed" ${parts.allowFlyerSpeed ? "checked" : ""} /> Allow flyer speed leveling</label>
+        <label class="check-line"><input type="checkbox" data-launch="forceCaveFlyers" ${parts.forceCaveFlyers ? "checked" : ""} /> Force allow cave flyers</label>
+        <label class="check-line"><input type="checkbox" data-launch="allowTekGenesis" ${parts.allowTekGenesis ? "checked" : ""} /> Allow Tek suit powers in Genesis</label>
+      </div>
+      <label class="field">
+        <span>Mods (comma-separated CurseForge IDs)</span>
+        <textarea data-launch="mods" rows="2" placeholder="931874,930829,930404,...">${escapeHtml(parts.mods)}</textarea>
+      </label>
+      <details class="launch-advanced">
+        <summary>Advanced / raw launch string</summary>
+        <label class="field">
+          <span>Extra ?query options (optional, joined with ?)</span>
+          <input data-launch="extraQuery" value="${escapeHtml(parts.extraQuery)}" placeholder="SomeOption=Value" />
+        </label>
+        <label class="field">
+          <span>Extra -flags (optional)</span>
+          <input data-launch="extraFlags" value="${escapeHtml(parts.extraFlags)}" placeholder="-NoBattlEye" />
+        </label>
+        <label class="field">
+          <span>Raw launch arguments</span>
+          <textarea data-field="launchArgs" rows="3">${escapeHtml(server.launchArgs || "")}</textarea>
+        </label>
+      </details>
+    </div>
+  `;
+}
+
+function readLaunchPartsFromDom(root) {
+  const parts = defaultLaunchParts();
+  if (!root) return parts;
+  const get = name => root.querySelector(`[data-launch="${name}"]`);
+  parts.map = get("map")?.value || parts.map;
+  parts.customMap = get("customMap")?.value || "";
+  parts.port = get("port")?.value || "";
+  parts.queryPort = get("queryPort")?.value || "";
+  parts.rconEnabled = get("rconEnabled")?.value !== "false";
+  parts.rconPort = get("rconPort")?.value || "";
+  parts.maxPlayers = get("maxPlayers")?.value || "";
+  parts.difficulty = get("difficulty")?.value || "";
+  parts.clusterId = get("clusterId")?.value || "";
+  parts.clusterDir = get("clusterDir")?.value || "";
+  parts.allowFlyerSpeed = Boolean(get("allowFlyerSpeed")?.checked);
+  parts.forceCaveFlyers = Boolean(get("forceCaveFlyers")?.checked);
+  parts.allowTekGenesis = Boolean(get("allowTekGenesis")?.checked);
+  parts.mods = get("mods")?.value || "";
+  parts.extraQuery = get("extraQuery")?.value || "";
+  parts.extraFlags = get("extraFlags")?.value || "";
+  return parts;
+}
+
+function syncLaunchBuilderToArgs(serverId) {
+  const page = workspace.querySelector(`[data-server-id="${serverId}"]`);
+  const builder = page?.querySelector("[data-launch-builder]");
+  if (!builder) return;
+  const customWrap = builder.querySelector(".launch-custom-map");
+  const mapEl = builder.querySelector('[data-launch="map"]');
+  if (customWrap && mapEl) customWrap.hidden = mapEl.value !== "Custom";
+
+  const built = buildLaunchArgs(readLaunchPartsFromDom(builder));
+  const raw = builder.querySelector('[data-field="launchArgs"]');
+  if (raw && raw !== document.activeElement) raw.value = built;
+  schedulePatch(serverId, { launchArgs: built });
+  const server = state.servers.find(s => s.id === serverId);
+  if (server) server.launchArgs = built;
+}
 
 const state = {
   servers: [],
@@ -244,10 +544,7 @@ function renderServer(server) {
             </div>
           </div>
 
-          <label class="field">
-            <span>Launch Arguments</span>
-            <input data-field="launchArgs" value="${escapeHtml(server.launchArgs || "")}" placeholder="TheIsland_WP?listen?Port=7777?QueryPort=27015 ..." />
-          </label>
+          ${renderLaunchArgsEditor(server)}
 
           <div class="stats">
             <article class="stat-card ${statusUi.tone}">
@@ -1057,9 +1354,16 @@ workspace.addEventListener("submit", async event => {
 
 workspace.addEventListener("input", event => {
   const el = event.target;
-  const field = el.dataset.field;
   const server = activeServer();
-  if (!field || !server) return;
+  if (!server) return;
+
+  if (el.closest("[data-launch-builder]") && el.hasAttribute("data-launch")) {
+    syncLaunchBuilderToArgs(server.id);
+    return;
+  }
+
+  const field = el.dataset.field;
+  if (!field) return;
 
   if (field === "autostartDays" || field === "shutdownDays") {
     const index = Number(el.dataset.index);
@@ -1077,6 +1381,15 @@ workspace.addEventListener("input", event => {
   let value = el.value;
   if (field === "autostartTime" || field === "shutdownTime") value = fromTimeInput(value);
   schedulePatch(server.id, { [field]: value });
+});
+
+workspace.addEventListener("change", event => {
+  const el = event.target;
+  const server = activeServer();
+  if (!server) return;
+  if (el.closest("[data-launch-builder]") && el.hasAttribute("data-launch")) {
+    syncLaunchBuilderToArgs(server.id);
+  }
 });
 
 await refreshState();
