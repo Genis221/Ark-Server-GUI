@@ -623,6 +623,7 @@ button { cursor: pointer; }
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
   margin-top: 8px;
   padding-top: 14px;
   border-top: 1px solid var(--line);
@@ -630,6 +631,89 @@ button { cursor: pointer; }
 .check-grid { display: grid; gap: 8px; }
 .check-grid label { display: flex; align-items: center; gap: 8px; }
 
+.players-modal { width: min(560px, calc(100vw - 24px)); }
+.players-dialog-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+.players-dialog-sub {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.players-dialog-tools {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.players-dialog-list {
+  display: grid;
+  gap: 8px;
+  max-height: min(50vh, 420px);
+  overflow: auto;
+  padding-right: 2px;
+}
+.players-dialog-empty {
+  padding: 18px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+}
+.player-row {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--input-bg);
+  cursor: context-menu;
+  user-select: none;
+}
+.player-row:hover,
+.player-row.active {
+  border-color: var(--gold);
+  background: color-mix(in srgb, var(--gold) 10%, var(--input-bg));
+}
+.player-row-name {
+  font-weight: 700;
+  font-size: 15px;
+}
+.player-row-id {
+  font-size: 11px;
+  color: var(--muted);
+  word-break: break-all;
+}
+.player-context-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 200px;
+  display: grid;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-solid);
+  box-shadow: 0 16px 40px rgba(0,0,0,.45);
+}
+.player-context-menu[hidden] { display: none !important; }
+.player-context-menu button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.player-context-menu button:hover {
+  background: color-mix(in srgb, var(--gold) 16%, transparent);
+}
 .toast-stack {
   position: fixed;
   right: 18px;

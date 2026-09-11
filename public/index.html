@@ -122,6 +122,37 @@
       </div>
     </dialog>
 
+    <dialog id="players-dialog" class="modal players-modal">
+      <div class="modal-body">
+        <div class="players-dialog-head">
+          <div>
+            <h2 id="players-dialog-title">Online Players</h2>
+            <p id="players-dialog-sub" class="players-dialog-sub">Right-click a player for admin actions</p>
+          </div>
+          <div class="players-dialog-tools">
+            <button type="button" class="btn secondary" id="players-refresh">Refresh</button>
+            <button type="button" class="btn secondary" data-close>Close</button>
+          </div>
+        </div>
+        <div id="players-dialog-list" class="players-dialog-list">
+          <div class="players-dialog-empty">No players online</div>
+        </div>
+      </div>
+    </dialog>
+
+    <div id="player-context-menu" class="player-context-menu" hidden>
+      <button type="button" data-player-cmd="kick">Kick</button>
+      <button type="button" data-player-cmd="ban">Ban</button>
+      <button type="button" data-player-cmd="unban">Unban</button>
+      <button type="button" data-player-cmd="kill">Kill</button>
+      <button type="button" data-player-cmd="message">Message…</button>
+      <button type="button" data-player-cmd="whitelist">Whitelist</button>
+      <button type="button" data-player-cmd="unwhitelist">Remove whitelist</button>
+      <button type="button" data-player-cmd="makeadmin">Make server admin</button>
+      <button type="button" data-player-cmd="copyid">Copy EOS / Steam ID</button>
+      <button type="button" data-player-cmd="copyname">Copy name</button>
+    </div>
+
     <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
     <script type="module" src="/app.js"></script>
   </body>

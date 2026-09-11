@@ -23,6 +23,11 @@ const copyDialog = document.getElementById("copy-dialog");
 const confirmDialog = document.getElementById("confirm-dialog");
 const firewallDialog = document.getElementById("firewall-dialog");
 const repairDialog = document.getElementById("repair-dialog");
+const playersDialog = document.getElementById("players-dialog");
+const playerContextMenu = document.getElementById("player-context-menu");
+
+let playersDialogServerId = null;
+let contextPlayer = null;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -832,7 +837,7 @@ workspace.addEventListener("click", async event => {
       const el = document.getElementById("console-output");
       if (el) el.innerHTML = `<div class="console-empty">Live log and RCON output will appear here…</div>`;
     } else if (action === "console-players") {
-      await sendConsoleCommand(server.id, "ListPlayers", false);
+      await openPlayersDialog(server);
     } else if (action === "console-getchat") {
       await sendConsoleCommand(server.id, "GetChat", false);
     }
@@ -848,6 +853,166 @@ async function sendConsoleCommand(serverId, command, asChat) {
     body: { command, asChat: Boolean(asChat) }
   });
 }
+
+function hidePlayerContextMenu() {
+  if (!playerContextMenu) return;
+  playerContextMenu.hidden = true;
+  contextPlayer = null;
+  document.querySelectorAll(".player-row.active").forEach(el => el.classList.remove("active"));
+}
+
+function renderPlayersDialogList(players) {
+  const list = document.getElementById("players-dialog-list");
+  const sub = document.getElementById("players-dialog-sub");
+  if (!list) return;
+  const rows = Array.isArray(players) ? players : [];
+  if (sub) {
+    sub.textContent = rows.length
+      ? `${rows.length} online — right-click a player for Kick, Ban, Admin, and more`
+      : "No players online right now";
+  }
+  if (!rows.length) {
+    list.innerHTML = `<div class="players-dialog-empty">No players online</div>`;
+    return;
+  }
+  list.innerHTML = rows.map((player, idx) => `
+    <div class="player-row" data-player-index="${idx}" data-player-id="${escapeHtml(player.id || "")}" data-player-name="${escapeHtml(player.name || "")}">
+      <div class="player-row-name">${escapeHtml(player.name || "Unknown")}</div>
+      <div class="player-row-id">${escapeHtml(player.id || "No EOS/Steam ID in ListPlayers reply")}</div>
+    </div>
+  `).join("");
+}
+
+async function refreshPlayersDialog() {
+  const server = state.servers.find(s => s.id === playersDialogServerId) || activeServer();
+  if (!server) return;
+  const data = await api(`/api/servers/${server.id}/players`);
+  const idx = state.servers.findIndex(s => s.id === server.id);
+  if (idx >= 0) {
+    state.servers[idx] = {
+      ...state.servers[idx],
+      players: data.count || 0,
+      playerNames: (data.players || []).map(p => p.name),
+      playerList: data.players || []
+    };
+    updateLiveStats(state.servers[idx]);
+  }
+  renderPlayersDialogList(data.players || []);
+}
+
+async function openPlayersDialog(server) {
+  playersDialogServerId = server.id;
+  const title = document.getElementById("players-dialog-title");
+  if (title) title.textContent = `Online Players — ${server.profile}`;
+  renderPlayersDialogList(server.playerList || []);
+  playersDialog?.showModal();
+  try {
+    await refreshPlayersDialog();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function showPlayerContextMenu(event, row) {
+  if (!playerContextMenu) return;
+  contextPlayer = {
+    id: row.dataset.playerId || "",
+    name: row.dataset.playerName || ""
+  };
+  document.querySelectorAll(".player-row.active").forEach(el => el.classList.remove("active"));
+  row.classList.add("active");
+  playerContextMenu.hidden = false;
+  const menuW = playerContextMenu.offsetWidth || 200;
+  const menuH = playerContextMenu.offsetHeight || 280;
+  let left = event.clientX;
+  let top = event.clientY;
+  if (left + menuW > window.innerWidth - 8) left = window.innerWidth - menuW - 8;
+  if (top + menuH > window.innerHeight - 8) top = window.innerHeight - menuH - 8;
+  playerContextMenu.style.left = `${Math.max(8, left)}px`;
+  playerContextMenu.style.top = `${Math.max(8, top)}px`;
+}
+
+async function runPlayerContextAction(cmd) {
+  const server = state.servers.find(s => s.id === playersDialogServerId) || activeServer();
+  const player = contextPlayer;
+  hidePlayerContextMenu();
+  if (!server || !player) return;
+
+  try {
+    if (cmd === "copyid") {
+      if (!player.id) throw new Error("No player ID available");
+      await navigator.clipboard.writeText(player.id);
+      toast("Copied player ID", "success");
+      return;
+    }
+    if (cmd === "copyname") {
+      await navigator.clipboard.writeText(player.name || "");
+      toast("Copied player name", "success");
+      return;
+    }
+    if (cmd === "message") {
+      const message = window.prompt(`Message to ${player.name || "player"}:`, "");
+      if (message == null || !String(message).trim()) return;
+      await api(`/api/servers/${server.id}/player-action`, {
+        method: "POST",
+        body: { action: "message", playerId: player.id, playerName: player.name, message: String(message).trim() }
+      });
+      toast(`Message sent to ${player.name}`, "success");
+      return;
+    }
+    if (cmd === "ban" || cmd === "kick" || cmd === "kill") {
+      const label = cmd === "ban" ? "Ban" : cmd === "kick" ? "Kick" : "Kill";
+      if (!window.confirm(`${label} ${player.name || player.id}?`)) return;
+    }
+    if (!player.id && cmd !== "copyname") {
+      throw new Error("This player has no EOS/Steam ID in ListPlayers — cannot run that action");
+    }
+    await api(`/api/servers/${server.id}/player-action`, {
+      method: "POST",
+      body: { action: cmd, playerId: player.id, playerName: player.name }
+    });
+    if (cmd === "makeadmin") {
+      toast(`${player.name} added to AllowedCheaterSteamIDs.txt`, "success");
+    } else {
+      toast(`${cmd} sent for ${player.name || player.id}`, "success");
+    }
+    if (["kick", "ban", "kill"].includes(cmd)) await refreshPlayersDialog();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+document.getElementById("players-refresh")?.addEventListener("click", async () => {
+  try {
+    await refreshPlayersDialog();
+    toast("Player list refreshed", "success");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+});
+
+document.getElementById("players-dialog-list")?.addEventListener("contextmenu", event => {
+  const row = event.target.closest(".player-row");
+  if (!row) return;
+  event.preventDefault();
+  showPlayerContextMenu(event, row);
+});
+
+playerContextMenu?.addEventListener("click", async event => {
+  const btn = event.target.closest("[data-player-cmd]");
+  if (!btn) return;
+  await runPlayerContextAction(btn.dataset.playerCmd);
+});
+
+document.addEventListener("click", event => {
+  if (playerContextMenu && !playerContextMenu.hidden && !event.target.closest("#player-context-menu")) {
+    hidePlayerContextMenu();
+  }
+});
+
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") hidePlayerContextMenu();
+});
 
 workspace.addEventListener("submit", async event => {
   if (event.target?.id !== "console-form") return;

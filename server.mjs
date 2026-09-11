@@ -195,6 +195,7 @@ function runtimeOf(id) {
       availability: "Offline",
       players: 0,
       playerNames: [],
+      playerList: [],
       maxPlayers: 70,
       pid: null,
       startedAt: 0,
@@ -216,6 +217,7 @@ function runtimeOf(id) {
   runtime.consoleLogs ||= [];
   runtime.consoleStreams ||= new Set();
   runtime.playerNames ||= [];
+  runtime.playerList ||= [];
   return runtime;
 }
 
@@ -326,6 +328,7 @@ function publicServer(server, rcon = null) {
     availability: runtime.availability,
     players: runtime.players,
     playerNames: Array.isArray(runtime.playerNames) ? runtime.playerNames : [],
+    playerList: Array.isArray(runtime.playerList) ? runtime.playerList : [],
     maxPlayers: runtime.maxPlayers || parseMaxPlayers(server.launchArgs),
     pid: runtime.pid,
     backupInProgress: Boolean(runtime.backupInProgress),
@@ -710,33 +713,78 @@ function parseListPlayers(text) {
     .trim();
 
   if (!raw || /no players/i.test(raw)) {
-    return { count: 0, names: [], raw, ok: Boolean(raw) || /no players/i.test(String(text || "")) };
+    return {
+      count: 0,
+      names: [],
+      players: [],
+      raw,
+      ok: Boolean(raw) || /no players/i.test(String(text || ""))
+    };
   }
   const names = [];
+  const players = [];
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     // ASA: "0. Nickname, 00025dbef45f4f10a4d9d69b041389f2" (EOS id)
     // ASE: "0. Nickname, 76561198..." (Steam id)
-    const match = trimmed.match(/^\d+\.\s*(.+?)\s*,\s*\S+/);
+    const match = trimmed.match(/^(\d+)\.\s*(.+?)\s*,\s*(\S+)\s*$/);
     if (match) {
-      names.push(match[1].trim());
+      const entry = {
+        index: Number(match[1]),
+        name: match[2].trim(),
+        id: match[3].trim()
+      };
+      players.push(entry);
+      names.push(entry.name);
       continue;
     }
-    const loose = trimmed.match(/^\d+\.\s*(.+)$/);
-    if (loose) names.push(loose[1].replace(/,\s*$/, "").trim());
+    const loose = trimmed.match(/^(\d+)\.\s*(.+)$/);
+    if (loose) {
+      const name = loose[2].replace(/,\s*$/, "").trim();
+      const entry = { index: Number(loose[1]), name, id: "" };
+      players.push(entry);
+      names.push(name);
+    }
   }
-  return { count: names.length, names, raw, ok: true };
+  return { count: players.length, names, players, raw, ok: true };
 }
 
 function formatPlayerListMessage(parsed) {
   if (parsed.count > 0) {
-    const lines = parsed.names.map((name, i) => `${i}. ${name}`);
+    const lines = (parsed.players || []).map(p => (
+      p.id ? `${p.index}. ${p.name} (${p.id})` : `${p.index}. ${p.name}`
+    ));
     return `Players online (${parsed.count}):\n${lines.join("\n")}`;
   }
   if (/no players/i.test(parsed.raw || "")) return "No players connected.";
   if (parsed.raw) return `ListPlayers raw reply:\n${parsed.raw}`;
   return "ListPlayers returned empty (or only Keep Alive). Check this profile's RCONPort matches GameUserSettings.ini, then try again.";
+}
+
+async function addPlayerAsAdmin(server, playerId, playerName) {
+  const id = String(playerId || "").trim();
+  if (!id) throw Object.assign(new Error("Player ID is required to grant admin"), { status: 400 });
+  const savedDir = path.join(server.install, "ShooterGame", "Saved");
+  await mkdir(savedDir, { recursive: true });
+  const filePath = path.join(savedDir, "AllowedCheaterSteamIDs.txt");
+  let existing = "";
+  try {
+    existing = await readFile(filePath, "utf8");
+  } catch {
+    existing = "";
+  }
+  const lines = existing.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!lines.some(line => line.toLowerCase() === id.toLowerCase())) {
+    lines.push(id);
+    await writeFile(filePath, `${lines.join("\n")}\n`, "utf8");
+  }
+  appendConsoleLog(
+    server.id,
+    `Added ${playerName || "player"} (${id}) to AllowedCheaterSteamIDs.txt. They can use admin cheats after EnableCheats with the server admin password (restart may be required).`,
+    "system"
+  );
+  return { ok: true, path: filePath, id };
 }
 
 function appendConsoleLog(serverId, message, level = "info") {
@@ -1067,6 +1115,7 @@ async function refreshPlayersForRunningServers() {
     const runtime = runtimeOf(server.id);
     runtime.players = sample.count;
     runtime.playerNames = sample.names;
+    runtime.playerList = sample.players || [];
     runtime.availability = "Online";
   }
 }
@@ -1105,6 +1154,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
     if (sample) {
       runtime.players = sample.count;
       runtime.playerNames = sample.names;
+      runtime.playerList = sample.players || [];
     }
 
     const ready = await detectReadyFromLogs(server.install);
@@ -1123,6 +1173,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
     runtime.availability = "Offline";
     runtime.players = 0;
     runtime.playerNames = [];
+    runtime.playerList = [];
     runtime.startedAt = 0;
   }
 }
@@ -2066,6 +2117,100 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (method === "GET" && action === "players") {
+    const settings = await readRconSettings(gusIniPath(server), server.launchArgs);
+    if (!settings.enabled) {
+      return sendJson(res, 400, { error: "RCON is disabled. Set RCONEnabled=True in GameUserSettings.ini" });
+    }
+    if (!settings.password) {
+      return sendJson(res, 400, { error: "ServerAdminPassword is empty in GameUserSettings.ini" });
+    }
+    if (String(runtimeOf(server.id).status).toLowerCase() !== "running") {
+      return sendJson(res, 409, { error: "Server must be running to list players" });
+    }
+    try {
+      const reply = await rconExec("127.0.0.1", settings.port, settings.password, "ListPlayers", 10000);
+      const parsed = parseListPlayers(reply);
+      const runtime = runtimeOf(server.id);
+      runtime.players = parsed.count;
+      runtime.playerNames = parsed.names;
+      runtime.playerList = parsed.players || [];
+      return sendJson(res, 200, {
+        ok: true,
+        port: settings.port,
+        count: parsed.count,
+        players: parsed.players || [],
+        raw: parsed.raw || ""
+      });
+    } catch (err) {
+      return sendJson(res, 502, { error: formatRconConnectError(err, settings.port) });
+    }
+  }
+
+  if (method === "POST" && action === "player-action") {
+    const body = (await readBody(req)) || {};
+    const playerAction = String(body.action || "").trim().toLowerCase();
+    const playerId = String(body.playerId || "").trim();
+    const playerName = String(body.playerName || "").trim();
+    const message = String(body.message || "").trim();
+
+    if (playerAction === "makeadmin") {
+      if (String(runtimeOf(server.id).status).toLowerCase() === "updating") {
+        return sendJson(res, 409, { error: "Server is updating" });
+      }
+      const result = await addPlayerAsAdmin(server, playerId, playerName);
+      return sendJson(res, 200, result);
+    }
+
+    const settings = await readRconSettings(gusIniPath(server), server.launchArgs);
+    if (!settings.enabled || !settings.password) {
+      return sendJson(res, 400, { error: "RCON must be enabled with ServerAdminPassword" });
+    }
+    if (String(runtimeOf(server.id).status).toLowerCase() !== "running") {
+      return sendJson(res, 409, { error: "Server must be running" });
+    }
+    if (!playerId && !["refresh"].includes(playerAction)) {
+      return sendJson(res, 400, { error: "Player ID is required for this action" });
+    }
+
+    const commandMap = {
+      kick: `KickPlayer ${playerId}`,
+      ban: `BanPlayer ${playerId}`,
+      unban: `UnbanPlayer ${playerId}`,
+      kill: `KillPlayer ${playerId}`,
+      whitelist: `AllowPlayerToJoinNoCheck ${playerId}`,
+      unwhitelist: `DisallowPlayerToJoinNoCheck ${playerId}`,
+      message: message
+        ? `ServerChatTo "${playerId}" ${message}`
+        : null
+    };
+    const command = commandMap[playerAction];
+    if (!command) return sendJson(res, 400, { error: `Unknown player action: ${playerAction}` });
+
+    appendConsoleLog(server.id, `> ${command}`, "command");
+    try {
+      const reply = await rconExec("127.0.0.1", settings.port, settings.password, command, 10000);
+      if (reply) appendConsoleLog(server.id, reply, "rcon");
+      else appendConsoleLog(server.id, `(${playerAction}) sent for ${playerName || playerId}`, "system");
+      if (["kick", "ban", "kill"].includes(playerAction)) {
+        // Refresh list after removing someone.
+        try {
+          const listReply = await rconExec("127.0.0.1", settings.port, settings.password, "ListPlayers", 10000);
+          const parsed = parseListPlayers(listReply);
+          const runtime = runtimeOf(server.id);
+          runtime.players = parsed.count;
+          runtime.playerNames = parsed.names;
+          runtime.playerList = parsed.players || [];
+        } catch { /* ignore refresh errors */ }
+      }
+      return sendJson(res, 200, { ok: true, reply: reply || "" });
+    } catch (err) {
+      const friendly = formatRconConnectError(err, settings.port);
+      appendConsoleLog(server.id, friendly, "error");
+      return sendJson(res, 502, { error: friendly });
+    }
+  }
+
   if (method === "POST" && action === "command") {
     const body = (await readBody(req)) || {};
     let command = String(body.command || "").trim();
@@ -2092,12 +2237,14 @@ async function handleApi(req, res, url) {
         const runtime = runtimeOf(server.id);
         runtime.players = parsed.count;
         runtime.playerNames = parsed.names;
+        runtime.playerList = parsed.players || [];
         appendConsoleLog(server.id, formatPlayerListMessage(parsed), parsed.count ? "rcon" : "system");
         return sendJson(res, 200, {
           ok: true,
           reply: reply || "",
           players: parsed.count,
-          playerNames: parsed.names
+          playerNames: parsed.names,
+          playerList: parsed.players || []
         });
       }
       if (reply) appendConsoleLog(server.id, reply, "rcon");
