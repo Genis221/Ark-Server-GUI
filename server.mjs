@@ -459,12 +459,21 @@ async function upsertIniSectionKeys(iniPath, sectionName, values) {
 function pickRconPort(server) {
   const args = String(server.launchArgs || "");
   const fromArgs = args.match(/RCONPort=(\d+)/i);
-  if (fromArgs) return Number(fromArgs[1]);
-  const query = parseQueryPort(args);
-  if (query) return query; // TCP RCON can share the query port number (query is UDP)
-  const game = parseGamePort(args);
-  if (game) return game + 2;
-  return 27020;
+  if (fromArgs) {
+    const port = Number(fromArgs[1]);
+    if (port > 0) return port;
+  }
+  // Dedicated multi-server range (user convention): 32300, 32301, ...
+  const used = new Set();
+  for (const other of state.servers || []) {
+    if (other.id === server.id) continue;
+    const m = String(other.launchArgs || "").match(/RCONPort=(\d+)/i);
+    if (m) used.add(Number(m[1]));
+  }
+  const order = Number.isFinite(Number(server.order)) ? Number(server.order) : 0;
+  let port = 32300 + Math.max(0, order);
+  while (used.has(port)) port += 1;
+  return port;
 }
 
 function ensureLaunchArgsRcon(launchArgs, port) {
@@ -489,8 +498,11 @@ function ensureLaunchArgsRcon(launchArgs, port) {
 
 async function ensureRconConfig(server) {
   const iniPath = gusIniPath(server);
-  const existing = await readRconSettings(iniPath);
-  const port = pickRconPort(server);
+  const existing = await readRconSettings(iniPath, server.launchArgs);
+  // Never clobber an explicit RCON port (e.g. 32308). Only assign when missing/default.
+  const port = existing.port && existing.port !== 27020
+    ? existing.port
+    : pickRconPort(server);
   const password = existing.password;
 
   await upsertIniSectionKeys(iniPath, "ServerSettings", {
@@ -512,7 +524,7 @@ async function ensureRconConfig(server) {
       "error"
     );
   } else {
-    appendConsoleLog(server.id, `RCON configured on TCP port ${port}.`, "system");
+    appendConsoleLog(server.id, `RCON using TCP port ${port}.`, "system");
   }
 
   return { enabled: true, port, password };
@@ -521,7 +533,7 @@ async function ensureRconConfig(server) {
 function formatRconConnectError(err, port) {
   const msg = String(err?.message || err || "RCON failed");
   if (/ECONNREFUSED/i.test(msg)) {
-    return `RCON is not listening on 127.0.0.1:${port}. In GameUserSettings.ini set RCONEnabled=True, RCONPort=${port}, and ServerAdminPassword, then fully Stop + Start this ARK server (not just the manager).`;
+    return `RCON is not listening on 127.0.0.1:${port}. Confirm GameUserSettings.ini RCONPort=${port}, then fully Stop + Start this ARK server.`;
   }
   return msg;
 }
@@ -529,25 +541,37 @@ function formatRconConnectError(err, port) {
 async function readRconSettings(iniPath, launchArgs = "") {
   const defaults = { enabled: false, port: 27020, password: "" };
   let enabled = defaults.enabled;
-  let port = defaults.port;
+  let iniPort = null;
+  let argPort = null;
   let password = defaults.password;
   if (await pathExists(iniPath)) {
     const raw = await readFile(iniPath, "utf8");
     enabled = /RCONEnabled\s*=\s*True/i.test(raw);
     const portMatch = raw.match(/RCONPort\s*=\s*(\d+)/i);
     const passMatch = raw.match(/ServerAdminPassword\s*=\s*(.*)$/im);
-    if (portMatch) port = Number(portMatch[1]);
+    if (portMatch) iniPort = Number(portMatch[1]);
     if (passMatch) password = String(passMatch[1]).trim();
   }
   const args = String(launchArgs || "");
   if (/RCONEnabled\s*=\s*True/i.test(args)) enabled = true;
-  const argPort = args.match(/RCONPort=(\d+)/i);
-  if (argPort) port = Number(argPort[1]);
+  const argMatch = args.match(/RCONPort=(\d+)/i);
+  if (argMatch) argPort = Number(argMatch[1]);
+
+  // Prefer dedicated RCON ports (32300+) or INI over launch-arg guesses / query-port collisions.
+  let port = defaults.port;
+  const prefer = candidate => candidate && candidate !== 27020;
+  if (prefer(iniPort) && iniPort >= 32300) port = iniPort;
+  else if (prefer(argPort) && argPort >= 32300) port = argPort;
+  else if (prefer(iniPort)) port = iniPort;
+  else if (prefer(argPort)) port = argPort;
+  else if (iniPort) port = iniPort;
+  else if (argPort) port = argPort;
+
   return { enabled, port, password };
 }
 
-async function readRconPort(iniPath) {
-  const settings = await readRconSettings(iniPath);
+async function readRconPort(iniPath, launchArgs = "") {
+  const settings = await readRconSettings(iniPath, launchArgs);
   return settings.port || null;
 }
 
@@ -578,33 +602,36 @@ function decodeRconPackets(buffer) {
   return { packets, rest: buffer.subarray(offset) };
 }
 
-function rconExec(host, port, password, command, timeoutMs = 8000) {
+function isRconKeepAlive(text) {
+  return /^keep\s*alive$/i.test(cleanRconBody(text));
+}
+
+function rconExec(host, port, password, command, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
     const socket = net.connect({ host, port });
     let buffer = Buffer.alloc(0);
     let authed = false;
     let settled = false;
     let response = "";
-    let sawEnd = false;
-    let settleTimer = null;
+    let gotReal = false;
+    let idleTimer = null;
     const authId = 1;
     const cmdId = 2;
-    const endId = 3;
 
     const finish = (err, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (settleTimer) clearTimeout(settleTimer);
+      if (idleTimer) clearTimeout(idleTimer);
       try { socket.destroy(); } catch { /* ignore */ }
       if (err) reject(err);
       else resolve(value);
     };
 
-    const scheduleSettle = () => {
-      if (settleTimer) clearTimeout(settleTimer);
-      // ASA often sends the multipacket "end" marker before the ListPlayers body.
-      settleTimer = setTimeout(() => finish(null, cleanRconBody(response)), 350);
+    const bumpIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      // After the first real payload, wait briefly for fragmented follow-up packets.
+      idleTimer = setTimeout(() => finish(null, cleanRconBody(response)), gotReal ? 400 : 1200);
     };
 
     const timer = setTimeout(() => {
@@ -621,24 +648,35 @@ function rconExec(host, port, password, command, timeoutMs = 8000) {
       const decoded = decodeRconPackets(buffer);
       buffer = decoded.rest;
       for (const packet of decoded.packets) {
+        const body = cleanRconBody(packet.body || "");
         if (!authed) {
           if (packet.id === -1) return finish(new Error("RCON authentication failed — check ServerAdminPassword"));
+          // Ignore unsolicited keep-alives during auth.
+          if (isRconKeepAlive(body) || (packet.id === 0 && !body)) continue;
           if (packet.id === authId) {
             authed = true;
+            // ASA: send command only. Multipacket "end" markers race with Keep Alive packets.
             socket.write(encodeRconPacket(cmdId, 2, command));
-            socket.write(encodeRconPacket(endId, 0, ""));
+            bumpIdle();
           }
           continue;
         }
-        if (packet.id === endId) {
-          sawEnd = true;
-          // Keep waiting briefly for late command body packets from ASA.
-          scheduleSettle();
+
+        if (isRconKeepAlive(body) || (packet.id === 0 && isRconKeepAlive(packet.body || ""))) {
+          bumpIdle();
           continue;
         }
-        if (packet.id === cmdId || packet.id === 0 || packet.type === 0) {
-          response += packet.body || "";
-          if (sawEnd) scheduleSettle();
+
+        if (!body) {
+          bumpIdle();
+          continue;
+        }
+
+        // Accept command responses (and odd ASA ids) that carry real text.
+        if (packet.id === cmdId || packet.id === 0 || packet.type === 0 || packet.type === 2) {
+          response += (response ? "\n" : "") + body;
+          gotReal = true;
+          bumpIdle();
         }
       }
     });
@@ -661,8 +699,19 @@ function cleanRconBody(text) {
 }
 
 function parseListPlayers(text) {
-  const raw = cleanRconBody(text);
-  if (!raw || /no players/i.test(raw)) return { count: 0, names: [], raw };
+  let raw = cleanRconBody(text);
+  if (isRconKeepAlive(raw)) raw = "";
+  // Strip keep-alive lines mixed into a larger reply.
+  raw = raw
+    .split("\n")
+    .map(line => line.trim())
+    .filter(line => line && !/^keep\s*alive$/i.test(line))
+    .join("\n")
+    .trim();
+
+  if (!raw || /no players/i.test(raw)) {
+    return { count: 0, names: [], raw, ok: Boolean(raw) || /no players/i.test(String(text || "")) };
+  }
   const names = [];
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
@@ -677,7 +726,7 @@ function parseListPlayers(text) {
     const loose = trimmed.match(/^\d+\.\s*(.+)$/);
     if (loose) names.push(loose[1].replace(/,\s*$/, "").trim());
   }
-  return { count: names.length, names, raw };
+  return { count: names.length, names, raw, ok: true };
 }
 
 function formatPlayerListMessage(parsed) {
@@ -687,7 +736,7 @@ function formatPlayerListMessage(parsed) {
   }
   if (/no players/i.test(parsed.raw || "")) return "No players connected.";
   if (parsed.raw) return `ListPlayers raw reply:\n${parsed.raw}`;
-  return "ListPlayers returned empty. If you are in-game, wait a few seconds and try again.";
+  return "ListPlayers returned empty (or only Keep Alive). Check this profile's RCONPort matches GameUserSettings.ini, then try again.";
 }
 
 function appendConsoleLog(serverId, message, level = "info") {
@@ -995,10 +1044,30 @@ async function queryPlayersViaRcon(server) {
   try {
     const settings = await readRconSettings(gusIniPath(server), server.launchArgs);
     if (!settings.enabled || !settings.password) return null;
-    const reply = await rconExec("127.0.0.1", settings.port, settings.password, "ListPlayers", 8000);
-    return parseListPlayers(reply);
+    const reply = await rconExec("127.0.0.1", settings.port, settings.password, "ListPlayers", 10000);
+    const parsed = parseListPlayers(reply);
+    // Keep-alive-only / empty failed reads should not wipe a good previous player list.
+    if (!parsed.ok && !parsed.raw) return null;
+    parsed.port = settings.port;
+    return parsed;
   } catch {
     return null;
+  }
+}
+
+async function refreshPlayersForRunningServers() {
+  const running = state.servers.filter(server => {
+    const status = String(runtimeOf(server.id).status || "").toLowerCase();
+    return status === "running" || status === "starting…";
+  });
+  // Sequential — multiple maps each have their own RCON port (32300+).
+  for (const server of running) {
+    const sample = await queryPlayersViaRcon(server);
+    if (!sample) continue;
+    const runtime = runtimeOf(server.id);
+    runtime.players = sample.count;
+    runtime.playerNames = sample.names;
+    runtime.availability = "Online";
   }
 }
 
@@ -1031,14 +1100,11 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
       runtime.maxPlayers = Number(info.max_players) || runtime.maxPlayers;
     }
 
-    // ASA A2S player counts are often 0 even with people online — prefer RCON names/count.
+    // ASA A2S player counts are often wrong — always prefer per-server RCON ListPlayers.
     const sample = await queryPlayersViaRcon(server);
     if (sample) {
       runtime.players = sample.count;
       runtime.playerNames = sample.names;
-    } else if (info && Number.isFinite(Number(info.players))) {
-      runtime.players = Number(info.players) || 0;
-      if (!runtime.players) runtime.playerNames = [];
     }
 
     const ready = await detectReadyFromLogs(server.install);
@@ -1204,7 +1270,7 @@ async function ensureFirewall(server) {
   const ports = [mainPort, mainPort + 1];
   const queryPort = parseQueryPort(server.launchArgs);
   if (queryPort) ports.push(queryPort);
-  const rcon = await readRconPort(gusIniPath(server));
+  const rcon = await readRconPort(gusIniPath(server), server.launchArgs);
   if (rcon) ports.push(rcon);
 
   const rules = [];
@@ -2067,6 +2133,10 @@ async function main() {
   setInterval(() => {
     scheduleRuntimeRefresh({ deep: true });
   }, 8000);
+
+  setInterval(() => {
+    refreshPlayersForRunningServers().catch(err => console.error("[player refresh]", err));
+  }, 5000);
 
   setInterval(() => {
     automationTick().catch(err => console.error("[automation]", err));

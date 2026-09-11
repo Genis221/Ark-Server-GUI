@@ -185,7 +185,7 @@ function rconHint(server) {
   if (!rcon.enabled) return "RCON disabled — set RCONEnabled=True in GameUserSettings.ini";
   if (!rcon.hasPassword) return "Set ServerAdminPassword in GameUserSettings.ini to use commands/chat";
   if (String(server.status).toLowerCase() !== "running") return "Start the server to send commands and chat";
-  return `RCON ready on port ${rcon.port || 27020}`;
+  return `RCON ready on TCP ${rcon.port || "?"} · players auto-refresh`;
 }
 
 function renderServer(server) {
