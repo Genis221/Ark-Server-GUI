@@ -544,8 +544,6 @@ function renderServer(server) {
             </div>
           </div>
 
-          ${renderLaunchArgsEditor(server)}
-
           <div class="stats">
             <article class="stat-card ${statusUi.tone}">
               <span>Status</span>
@@ -569,6 +567,9 @@ function renderServer(server) {
               <strong>${escapeHtml(server.firewallStatus || "Not Checked")}</strong>
             </article>
           </div>
+
+          ${renderLaunchArgsEditor(server)}
+
         </section>
 
         <div class="configs-heading">
