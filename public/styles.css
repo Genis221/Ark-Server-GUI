@@ -256,11 +256,13 @@ html[data-theme="light"] .host-meter-track {
   gap: 10px;
   width: 100%;
   text-align: left;
-  border: 1px solid transparent;
+  border: 1px solid rgba(212, 85, 90, 0.45);
   background: transparent;
   color: var(--muted);
   border-radius: 14px;
   padding: 10px;
+  box-shadow: none;
+  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
 }
 .tab::before {
   content: "";
@@ -269,18 +271,28 @@ html[data-theme="light"] .host-meter-track {
   border-radius: 50%;
   background: var(--red);
   box-shadow: 0 0 0 3px var(--red-dim);
+  flex: none;
 }
-.tab.running::before {
-  background: var(--green);
-  box-shadow: 0 0 0 3px var(--green-dim);
-}
-.tab.starting::before {
-  background: var(--warn);
-  box-shadow: 0 0 0 3px rgba(224, 177, 74, 0.2);
+.tab.stopped {
+  border-color: rgba(212, 85, 90, 0.55);
 }
 .tab.stopped::before {
   background: var(--red);
   box-shadow: 0 0 0 3px var(--red-dim);
+}
+.tab.starting {
+  border-color: rgba(224, 177, 74, 0.6);
+}
+.tab.starting::before {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px rgba(224, 177, 74, 0.22);
+}
+.tab.running {
+  border-color: rgba(46, 168, 106, 0.55);
+}
+.tab.running::before {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-dim);
 }
 .tab-copy {
   display: grid;
@@ -301,8 +313,21 @@ html[data-theme="light"] .host-meter-track {
 }
 .tab.active {
   background: var(--panel-solid);
-  border-color: rgba(226, 165, 58, 0.35);
+  border-color: rgba(226, 165, 58, 0.7);
   box-shadow: 0 0 0 3px var(--gold-soft);
+}
+/* Selected outline is gold, but the status dot always keeps running/starting/stopped color */
+.tab.active.stopped::before {
+  background: var(--red);
+  box-shadow: 0 0 0 3px var(--red-dim);
+}
+.tab.active.starting::before {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px rgba(224, 177, 74, 0.22);
+}
+.tab.active.running::before {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-dim);
 }
 .tab .close {
   border: 0;
