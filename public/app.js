@@ -457,8 +457,11 @@ function renderTabs() {
   tabsEl.innerHTML = servers.map(server => `
     <button type="button" class="tab ${statusClass(server)} ${server.id === state.activeId ? "active" : ""}"
       data-id="${server.id}" draggable="true" role="tab" aria-selected="${server.id === state.activeId}">
-      <span>${escapeHtml(server.profile || "New Server")}</span>
-      <span class="close" data-close="${server.id}" title="Close">×</span>
+      <span class="tab-copy">
+        <b>${escapeHtml(server.profile || "New Server")}</b>
+        <small>${escapeHtml(statusDisplay(server).label)}</small>
+      </span>
+      <span class="close" data-close="${server.id}" title="Remove">×</span>
     </button>
   `).join("");
 }

@@ -19,47 +19,49 @@
   </head>
   <body>
     <div class="app">
-      <header class="toolbar">
-        <div class="toolbar-brand">
-          <img class="brand-mark" src="/ark-icon.jpg" alt="" width="34" height="34" />
+      <aside class="rail">
+        <div class="rail-brand">
+          <img class="brand-mark" src="/ark-icon.jpg" alt="" width="40" height="40" />
           <div>
-            <strong>Ark: Survival Ascended Server Manager</strong>
-            <small>Local web control panel</small>
+            <span class="brand-kicker">ASA control</span>
+            <strong>Ark Manager</strong>
           </div>
         </div>
-        <section class="host-meters" id="host-meters" aria-label="This PC resources">
-          <p class="host-meters-kicker">This PC</p>
-          <div class="host-meters-grid">
-            <div class="host-meter" data-meter="cpu">
-              <div class="host-meter-head">
-                <span>CPU</span>
-                <strong id="host-cpu-label">—</strong>
-              </div>
-              <div class="host-meter-track"><i id="host-cpu-bar" style="width:0%"></i></div>
-              <small id="host-cpu-detail" class="host-meter-detail">—</small>
+        <div class="rail-tools">
+          <button type="button" class="tool-btn tool-btn-wide" id="btn-restart-manager" title="Restart Server Manager and check for updates">Restart Server Manager</button>
+          <div class="rail-tools-row">
+            <button type="button" class="tool-btn" id="btn-theme" title="Change to Light mode" aria-label="Change to Light mode">Change to Light mode</button>
+            <button type="button" class="tool-btn" id="btn-copy-settings" title="Copy settings between profiles">Copy Server Settings</button>
+            <button type="button" class="tool-btn ghost" id="btn-info" title="About Ark Server Manager">About</button>
+          </div>
+        </div>
+        <section class="host-meters" id="host-meters" aria-label="Server specs">
+          <p class="host-meters-kicker">Server Specs</p>
+          <div class="host-meter" data-meter="cpu">
+            <div class="host-meter-head">
+              <span>CPU</span>
+              <strong id="host-cpu-label">—</strong>
             </div>
-            <div class="host-meter" data-meter="ram">
-              <div class="host-meter-head">
-                <span>RAM</span>
-                <strong id="host-ram-label">—</strong>
-              </div>
-              <div class="host-meter-track"><i id="host-ram-bar" style="width:0%"></i></div>
-              <small id="host-ram-detail" class="host-meter-detail">—</small>
+            <div class="host-meter-track"><i id="host-cpu-bar" style="width:0%"></i></div>
+            <small id="host-cpu-detail" class="host-meter-detail">—</small>
+          </div>
+          <div class="host-meter" data-meter="ram">
+            <div class="host-meter-head">
+              <span>RAM</span>
+              <strong id="host-ram-label">—</strong>
             </div>
+            <div class="host-meter-track"><i id="host-ram-bar" style="width:0%"></i></div>
+            <small id="host-ram-detail" class="host-meter-detail">—</small>
           </div>
         </section>
-        <div class="toolbar-actions">
-          <button type="button" class="tool-btn" id="btn-restart-manager" title="Restart Server Manager and check for updates">Restart Server Manager</button>
-          <button type="button" class="tool-btn" id="btn-theme" title="Change to Light mode" aria-label="Change to Light mode">Change to Light mode</button>
-          <button type="button" class="tool-btn" id="btn-info">Ark Server Manager Info</button>
-          <button type="button" class="tool-btn" id="btn-copy-settings">Copy Server Settings</button>
+        <div class="rail-head">
+          <span>Fleet</span>
+          <div class="rail-head-actions">
+            <button type="button" class="plus-btn" id="btn-add" title="New Server" aria-label="New Server">+</button>
+          </div>
         </div>
-      </header>
-
-      <div class="tab-strip">
         <div class="tabs" id="tabs" role="tablist"></div>
-        <button type="button" class="plus-btn" id="btn-add" title="New Server" aria-label="New Server">+</button>
-      </div>
+      </aside>
 
       <main class="workspace" id="workspace">
         <div class="loading-view"><div class="spinner"></div><p>Loading profiles…</p></div>
