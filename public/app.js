@@ -1060,7 +1060,12 @@ function applyTheme(theme) {
   document.documentElement.dataset.theme = value;
   localStorage.setItem("ark-theme", value);
   const btn = document.getElementById("btn-theme");
-  if (btn) btn.textContent = value === "light" ? "Dark" : "Light";
+  if (btn) {
+    const nextLabel = value === "light" ? "Change to Dark mode" : "Change to Light mode";
+    btn.textContent = nextLabel;
+    btn.title = nextLabel;
+    btn.setAttribute("aria-label", nextLabel);
+  }
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.content = value === "light" ? "#f4f1ea" : "#10141c";
 }
@@ -1069,7 +1074,7 @@ applyTheme(localStorage.getItem("ark-theme") === "light" ? "light" : "dark");
 
 document.getElementById("btn-restart-manager").addEventListener("click", async () => {
   const ok = await confirmDanger(
-    "Restart Ark Manager",
+    "Restart Server Manager",
     "This restarts Ark Server Manager and checks GitHub for updates (same as Start Ark Manager.cmd). Your ARK game servers are left running. Continue?",
     "Restart"
   );
