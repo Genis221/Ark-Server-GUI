@@ -35,6 +35,27 @@
         </div>
       </header>
 
+      <section class="host-meters" id="host-meters" aria-label="This PC resources">
+        <p class="host-meters-kicker">This PC</p>
+        <div class="host-meters-grid">
+          <div class="host-meter" data-meter="cpu">
+            <div class="host-meter-head">
+              <span>CPU</span>
+              <strong id="host-cpu-label">—</strong>
+            </div>
+            <div class="host-meter-track"><i id="host-cpu-bar" style="width:0%"></i></div>
+          </div>
+          <div class="host-meter" data-meter="ram">
+            <div class="host-meter-head">
+              <span>RAM</span>
+              <strong id="host-ram-label">—</strong>
+            </div>
+            <div class="host-meter-track"><i id="host-ram-bar" style="width:0%"></i></div>
+            <small id="host-ram-detail" class="host-meter-detail">—</small>
+          </div>
+        </div>
+      </section>
+
       <div class="tab-strip">
         <div class="tabs" id="tabs" role="tablist"></div>
         <button type="button" class="plus-btn" id="btn-add" title="New Server" aria-label="New Server">+</button>

@@ -133,6 +133,76 @@ button { cursor: pointer; }
   color: #f4d28a;
 }
 
+.host-meters {
+  display: grid;
+  gap: 8px;
+  padding: 10px 22px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--toolbar-bg);
+  backdrop-filter: blur(10px);
+}
+.host-meters-kicker {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.host-meters-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 22px;
+  max-width: 720px;
+}
+.host-meter {
+  display: grid;
+  gap: 4px;
+}
+.host-meter-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.host-meter-head strong {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.host-meter-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+html[data-theme="light"] .host-meter-track {
+  background: rgba(0, 0, 0, 0.06);
+}
+.host-meter-track i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2dd4bf, #5eead4);
+  transition: width 0.45s ease, background 0.3s ease;
+}
+.host-meter[data-level="warn"] .host-meter-track i {
+  background: linear-gradient(90deg, #fbbf24, #f59e0b);
+}
+.host-meter[data-level="hot"] .host-meter-track i {
+  background: linear-gradient(90deg, #fb7185, var(--red));
+}
+.host-meter-detail {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
 .tab-strip {
   display: flex;
   align-items: flex-end;
@@ -829,7 +899,7 @@ button { cursor: pointer; }
   .controls-row { justify-content: flex-start; }
 }
 @media (max-width: 720px) {
-  .toolbar, .tab-strip, .workspace { padding-left: 14px; padding-right: 14px; }
-  .header-top, .grid-2, .stats { grid-template-columns: 1fr; }
+  .toolbar, .tab-strip, .workspace, .host-meters { padding-left: 14px; padding-right: 14px; }
+  .header-top, .grid-2, .stats, .host-meters-grid { grid-template-columns: 1fr; }
   .toolbar { flex-direction: column; align-items: flex-start; }
 }
