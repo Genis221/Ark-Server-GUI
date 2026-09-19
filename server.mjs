@@ -1274,23 +1274,6 @@ async function terminatePid(pid) {
   try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
 }
 
-async function waitForInstallIdle(install, timeoutMs = 45000) {
-  if (!install) return true;
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    processCache.at = 0;
-    const match = await findProcessForInstall(install);
-    if (!match) return true;
-    await new Promise(r => setTimeout(r, 1000));
-  }
-  processCache.at = 0;
-  return !(await findProcessForInstall(install));
-}
-
-async function delay(ms) {
-  await new Promise(r => setTimeout(r, ms));
-}
-
 function runCaptured(command, args, timeoutMs = 30000) {
   return new Promise(resolve => {
     const child = spawn(command, args, {
@@ -1548,19 +1531,12 @@ async function stopServer(server, { copyLog = true } = {}) {
   const match = await findProcessForInstall(server.install);
   const pid = match?.pid || runtime.pid;
   if (pid) await terminatePid(pid);
-  const idle = await waitForInstallIdle(server.install);
-  if (!idle) {
-    appendConsoleLog(server.id, "Warning: server process still present after stop request.", "error");
-  }
 
   runtime.status = "stopped";
   runtime.pid = null;
   runtime.startedAt = 0;
   runtime.availability = "Offline";
   runtime.players = 0;
-  runtime.playerNames = [];
-  runtime.playerList = [];
-  runtime.serverPingMs = null;
   addActivity(`Stopped ${server.profile}`, "info");
   processCache.at = 0;
   stopLogWatch(server.id);
@@ -1791,8 +1767,6 @@ async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
 
     await refreshRuntime(server, { deep: true });
     const payload = { ...publicServer(server), needsRepair: Boolean(runtime.needsRepair), updateExitCode: result.code };
-    // Clear updating before onComplete — startServer rejects while updating is true.
-    runtime.updating = false;
     if (typeof onComplete === "function" && !hit06 && result.code === 0) {
       try { await onComplete(); } catch (err) { addActivity(err.message, "error"); }
     }
@@ -1954,7 +1928,7 @@ async function automationTick() {
             if (server.autostartUpdate) {
               await runSteamUpdate(server, {
                 onComplete: async () => {
-                  await delay(5000);
+                  await new Promise(r => setTimeout(r, 5000));
                   await startServer(server);
                 }
               });
@@ -1974,14 +1948,12 @@ async function automationTick() {
           try {
             await stopServer(server);
             if (server.performUpdate) {
-              try {
-                await runSteamUpdate(server);
-              } catch (err) {
-                addActivity(`Scheduled update failed for ${server.profile}: ${err.message}`, "error");
-              }
-            }
-            if (server.thenRestart) {
-              await delay(3000);
+              await runSteamUpdate(server, {
+                onComplete: server.thenRestart
+                  ? async () => { await startServer(server); }
+                  : undefined
+              });
+            } else if (server.thenRestart) {
               await startServer(server);
             }
           } catch (err) {
@@ -2051,6 +2023,66 @@ async function handleApi(req, res, url) {
     await refreshAllRuntimes({ deep: false });
     scheduleRuntimeRefresh({ deep: true });
     return sendJson(res, 200, await publicStateAsync());
+  }
+
+  if (method === "POST" && pathname === "/api/manager/restart") {
+    const helperCmd = path.join(ROOT, "RestartArkManager.cmd");
+    const helperVbs = path.join(ROOT, "RestartArkManager.vbs");
+    const script = path.join(ROOT, "Start-ArkManager.ps1");
+    if (!(await pathExists(script))) {
+      return sendJson(res, 500, { error: "Start-ArkManager.ps1 was not found next to server.mjs" });
+    }
+    if (!(await pathExists(helperCmd))) {
+      return sendJson(res, 500, { error: "RestartArkManager.cmd was not found next to server.mjs" });
+    }
+    addActivity("Manager restart requested from the browser", "info");
+    sendJson(res, 200, {
+      ok: true,
+      message: "Pulling updates and restarting the manager. This page will reconnect shortly."
+    });
+
+    const logRestart = async line => {
+      try {
+        await mkdir(DATA_DIR, { recursive: true });
+        await writeFile(path.join(DATA_DIR, "restart.log"), `${new Date().toISOString()} ${line}\n`, { flag: "a" });
+      } catch { /* ignore */ }
+    };
+
+    // wscript.Run(..., False) creates a process outside node's job object so it
+    // survives process.exit. Fall back to cmd start if the .vbs is missing.
+    setTimeout(async () => {
+      try {
+        await logRestart(`api scheduling relaunch port=${PORT} host=${HOST || "0.0.0.0"}`);
+        let child;
+        if (await pathExists(helperVbs)) {
+          child = spawn(
+            path.join(process.env.SystemRoot || "C:\\Windows", "System32", "wscript.exe"),
+            ["//B", "//Nologo", helperVbs, String(PORT), String(HOST || "0.0.0.0")],
+            { cwd: ROOT, detached: true, stdio: "ignore", windowsHide: true, shell: false }
+          );
+        } else {
+          const cmdline = `start "" /min "${helperCmd}" ${PORT} "${HOST || "0.0.0.0"}"`;
+          child = spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", cmdline], {
+            cwd: ROOT,
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+            shell: false
+          });
+        }
+        child.on("error", err => {
+          logRestart(`spawn error: ${err.message}`);
+          console.error("[manager restart]", err);
+        });
+        child.unref();
+        await logRestart(`spawned relaunch pid=${child.pid || "?"}`);
+      } catch (err) {
+        await logRestart(`schedule failed: ${err.message}`);
+        console.error("[manager restart]", err);
+      }
+      setTimeout(() => process.exit(0), 1200);
+    }, 400);
+    return;
   }
 
   if (method === "POST" && pathname === "/api/servers") {

@@ -874,22 +874,44 @@ async function maybePromptRepair(server) {
   await refreshState({ silent: true });
 }
 
-async function confirmDelete(server) {
+async function confirmDanger(title, message, okLabel = "Delete") {
   return new Promise(resolve => {
-    document.getElementById("confirm-title").textContent = "Delete Server Profile";
-    document.getElementById("confirm-message").textContent =
-      `Delete profile "${server.profile}"? This does not delete server files on disk.`;
+    document.getElementById("confirm-title").textContent = title;
+    document.getElementById("confirm-message").textContent = message;
+    const okBtn = document.getElementById("confirm-ok");
+    okBtn.textContent = okLabel;
     confirmDialog.showModal();
     const onOk = () => { cleanup(); resolve(true); };
     const onCancel = () => { cleanup(); resolve(false); };
     function cleanup() {
       confirmDialog.close();
-      document.getElementById("confirm-ok").removeEventListener("click", onOk);
+      okBtn.textContent = "Delete";
+      okBtn.removeEventListener("click", onOk);
       document.getElementById("confirm-cancel").removeEventListener("click", onCancel);
     }
-    document.getElementById("confirm-ok").addEventListener("click", onOk);
+    okBtn.addEventListener("click", onOk);
     document.getElementById("confirm-cancel").addEventListener("click", onCancel);
   });
+}
+
+async function confirmDelete(server) {
+  return confirmDanger(
+    "Delete Server Profile",
+    `Delete profile "${server.profile}"? This does not delete server files on disk.`,
+    "Delete"
+  );
+}
+
+async function waitForManagerBack(timeoutMs = 120000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    await new Promise(r => setTimeout(r, 1500));
+    try {
+      const res = await fetch("/api/state", { cache: "no-store" });
+      if (res.ok) return true;
+    } catch { /* still down */ }
+  }
+  return false;
 }
 
 async function askFirewallConsent(server) {
@@ -1044,6 +1066,36 @@ function applyTheme(theme) {
 }
 
 applyTheme(localStorage.getItem("ark-theme") === "light" ? "light" : "dark");
+
+document.getElementById("btn-restart-manager").addEventListener("click", async () => {
+  const ok = await confirmDanger(
+    "Restart Ark Manager",
+    "This restarts Ark Server Manager and checks GitHub for updates (same as Start Ark Manager.cmd). Your ARK game servers are left running. Continue?",
+    "Restart"
+  );
+  if (!ok) return;
+  const btn = document.getElementById("btn-restart-manager");
+  if (btn) btn.disabled = true;
+  toast("Restarting manager — pulling updates, then coming back…", "info");
+  try {
+    await api("/api/manager/restart", { method: "POST", body: {} });
+  } catch (err) {
+    // Expected once the process exits mid-request; keep waiting for it to return.
+    if (!/failed to fetch|networkerror|load failed|fetch/i.test(String(err.message || err))) {
+      if (btn) btn.disabled = false;
+      toast(err.message, "error");
+      return;
+    }
+  }
+  const back = await waitForManagerBack();
+  if (btn) btn.disabled = false;
+  if (back) {
+    toast("Manager is back — reloading", "success");
+    location.reload();
+    return;
+  }
+  toast("Manager has not come back yet. Check the server console, then refresh this page.", "error");
+});
 
 document.getElementById("btn-info").addEventListener("click", () => {
   const lans = (window.__arkHost?.lanAddresses || []).map(ip => `http://${ip}:${window.__arkHost.managerPort || 3220}`);
