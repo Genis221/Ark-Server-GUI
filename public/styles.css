@@ -195,7 +195,7 @@ button { cursor: pointer; }
 .host-meter-track {
   height: 6px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.1);
   border: 1px solid var(--line);
   overflow: hidden;
 }
@@ -207,14 +207,29 @@ html[data-theme="light"] .host-meter-track {
   height: 100%;
   width: 0;
   border-radius: inherit;
-  background: linear-gradient(90deg, #2dd4bf, #5eead4);
+  background: linear-gradient(90deg, #5eead4, #99f6e4);
   transition: width 0.45s ease, background 0.3s ease;
+  box-shadow: 0 0 10px rgba(94, 234, 212, 0.45);
+}
+html[data-theme="light"] .host-meter-track i {
+  background: linear-gradient(90deg, #14b8a6, #2dd4bf);
+  box-shadow: none;
 }
 .host-meter[data-level="warn"] .host-meter-track i {
-  background: linear-gradient(90deg, #fbbf24, #f59e0b);
+  background: linear-gradient(90deg, #fbbf24, #fde68a);
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.4);
+}
+html[data-theme="light"] .host-meter[data-level="warn"] .host-meter-track i {
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  box-shadow: none;
 }
 .host-meter[data-level="hot"] .host-meter-track i {
-  background: linear-gradient(90deg, #fb7185, var(--red));
+  background: linear-gradient(90deg, #fb7185, #fda4af);
+  box-shadow: 0 0 10px rgba(251, 113, 133, 0.4);
+}
+html[data-theme="light"] .host-meter[data-level="hot"] .host-meter-track i {
+  background: linear-gradient(90deg, #f43f5e, #fb7185);
+  box-shadow: none;
 }
 .host-meter-detail {
   color: var(--muted);
