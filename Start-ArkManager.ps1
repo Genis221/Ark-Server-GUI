@@ -298,6 +298,51 @@ exit 0
   }
 }
 
+function Ensure-WindowsStartup {
+  $vbs = Join-Path $projectRoot "StartArkManagerAtLogon.vbs"
+  if (-not (Test-Path $vbs)) {
+    Write-Host "StartArkManagerAtLogon.vbs missing — skipping Windows startup registration." -ForegroundColor Yellow
+    return
+  }
+
+  $startupDir = [Environment]::GetFolderPath("Startup")
+  if (-not $startupDir -or -not (Test-Path $startupDir)) {
+    Write-Host "Could not locate the Windows Startup folder." -ForegroundColor Yellow
+    return
+  }
+
+  $lnkPath = Join-Path $startupDir "Ark Server Manager.lnk"
+  $wscript = Join-Path $env:SystemRoot "System32\wscript.exe"
+  try {
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($lnkPath)
+    $needsWrite = $true
+    if (Test-Path $lnkPath) {
+      $existing = $shell.CreateShortcut($lnkPath)
+      if (
+        $existing.TargetPath -eq $wscript -and
+        $existing.Arguments -eq "//B //Nologo `"$vbs`"" -and
+        $existing.WorkingDirectory -eq $projectRoot
+      ) {
+        $needsWrite = $false
+      }
+    }
+    if ($needsWrite) {
+      $shortcut.TargetPath = $wscript
+      $shortcut.Arguments = "//B //Nologo `"$vbs`""
+      $shortcut.WorkingDirectory = $projectRoot
+      $shortcut.WindowStyle = 7
+      $shortcut.Description = "Start Ark Server Manager at Windows logon"
+      $shortcut.Save()
+      Write-Host "Registered Ark Server Manager to start with Windows." -ForegroundColor Green
+    } else {
+      Write-Host "Windows startup already registered for Ark Server Manager." -ForegroundColor DarkGray
+    }
+  } catch {
+    Write-Host "Could not register Windows startup: $($_.Exception.Message)" -ForegroundColor Yellow
+  }
+}
+
 Write-Host "Preparing Ark Server Manager..." -ForegroundColor Cyan
 if (-not (Ensure-Git)) {
   Write-Host "Git is missing. Auto-update will be unavailable until Git is installed." -ForegroundColor Yellow
@@ -314,6 +359,7 @@ if ($didUpdate) {
 }
 Stop-ListenerOnPort -Port $Port
 Ensure-ManagerFirewallPort -Port $Port
+Ensure-WindowsStartup
 
 $lanIp = Get-LanIPv4
 Write-Host "Starting Ark Server Manager on port $Port..." -ForegroundColor Cyan

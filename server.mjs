@@ -412,6 +412,45 @@ function hostPublic() {
   };
 }
 
+async function ensureWindowsStartup() {
+  if (process.platform !== "win32") return false;
+  const vbs = path.join(ROOT, "StartArkManagerAtLogon.vbs");
+  if (!(await pathExists(vbs))) {
+    console.warn("[startup] StartArkManagerAtLogon.vbs missing — cannot register Windows logon start");
+    return false;
+  }
+  const script = `
+$ErrorActionPreference = 'Stop'
+$vbs = ${JSON.stringify(vbs)}
+$projectRoot = ${JSON.stringify(ROOT)}
+$startupDir = [Environment]::GetFolderPath('Startup')
+if (-not $startupDir) { throw 'Startup folder not found' }
+$lnkPath = Join-Path $startupDir 'Ark Server Manager.lnk'
+$wscript = Join-Path $env:SystemRoot 'System32\\wscript.exe'
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut($lnkPath)
+$shortcut.TargetPath = $wscript
+$shortcut.Arguments = '//B //Nologo "' + $vbs + '"'
+$shortcut.WorkingDirectory = $projectRoot
+$shortcut.WindowStyle = 7
+$shortcut.Description = 'Start Ark Server Manager at Windows logon'
+$shortcut.Save()
+Write-Output $lnkPath
+`;
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      { windowsHide: true, timeout: 15000 }
+    );
+    console.log(`[startup] Windows logon shortcut ready: ${(stdout || "").trim() || "Ark Server Manager.lnk"}`);
+    return true;
+  } catch (err) {
+    console.warn(`[startup] Could not register Windows logon start: ${err.message}`);
+    return false;
+  }
+}
+
 function sendJson(res, status, body) {
   const data = JSON.stringify(body);
   res.writeHead(status, {
@@ -2539,6 +2578,7 @@ async function main() {
   await refreshAllRuntimes({ deep: false });
   scheduleRuntimeRefresh({ deep: true });
   refreshHostResources();
+  ensureWindowsStartup().catch(err => console.warn("[startup]", err.message));
   setInterval(() => {
     try { refreshHostResources(); } catch { /* ignore */ }
   }, 2000);
