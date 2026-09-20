@@ -330,7 +330,14 @@ function Ensure-WindowsStartup {
       $runLine
     )
     Set-Content -LiteralPath $entryPath -Value $lines -Encoding ASCII -Force
-    Write-Host "Ark Server Manager will start with Windows (Startup\ArkServerManager.vbs)." -ForegroundColor Green
+
+    # Also register HKCU Run as a backup (same target as Startup).
+    $wscript = Join-Path $env:SystemRoot "System32\wscript.exe"
+    $runValue = "`"$wscript`" //B //Nologo `"$launcher`""
+    New-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Force | Out-Null
+    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "ArkServerManager" -Value $runValue -Type String -Force
+
+    Write-Host "Ark Server Manager will start with Windows (Startup + Run key)." -ForegroundColor Green
   } catch {
     Write-Host "Could not register Ark Server Manager for Windows startup: $($_.Exception.Message)" -ForegroundColor Yellow
   }

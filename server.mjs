@@ -441,7 +441,19 @@ Dim sh
 Set sh = CreateObject("WScript.Shell")
 sh.Run "wscript.exe //B //Nologo ""${escaped}""", 0, False
 `;
-    await writeFile(entryPath, vbs, "utf8");
+    await writeFile(entryPath, vbs, "ascii");
+    const script = `
+$ErrorActionPreference = 'Stop'
+$wscript = Join-Path $env:SystemRoot 'System32\\wscript.exe'
+$launcher = ${JSON.stringify(launcher)}
+$runValue = '"' + $wscript + '" //B //Nologo "' + $launcher + '"'
+New-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Force | Out-Null
+Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'ArkServerManager' -Value $runValue -Type String -Force
+`;
+    await execFileAsync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
+      windowsHide: true,
+      timeout: 15000
+    });
     console.log(`[startup] Windows logon entry ready: ${entryPath}`);
     return true;
   } catch (err) {
