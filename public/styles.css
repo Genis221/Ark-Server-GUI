@@ -224,6 +224,24 @@ html[data-theme="light"] .host-meter-track {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.host-startup-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.host-startup-line input {
+  accent-color: var(--gold);
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+.host-startup-line[hidden] { display: none !important; }
 
 .rail-head {
   display: flex;

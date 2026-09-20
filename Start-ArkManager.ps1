@@ -304,8 +304,30 @@ exit 0
 
 function Ensure-WindowsStartup {
   try {
+    $statePath = Join-Path $projectRoot "data\state.json"
+    $want = $true
+    if (Test-Path -LiteralPath $statePath) {
+      try {
+        $st = Get-Content -LiteralPath $statePath -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ($null -ne $st.PSObject.Properties["managerStartWithWindows"]) {
+          $want = [bool]$st.managerStartWithWindows
+        }
+      } catch { }
+    }
+
     $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
     $entryPath = Join-Path $startupDir "ArkServerManager.vbs"
+    $legacyLnk = Join-Path $startupDir "Ark Server Manager.lnk"
+    $runPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+
+    if (-not $want) {
+      if (Test-Path -LiteralPath $entryPath) { Remove-Item -LiteralPath $entryPath -Force -ErrorAction SilentlyContinue }
+      if (Test-Path -LiteralPath $legacyLnk) { Remove-Item -LiteralPath $legacyLnk -Force -ErrorAction SilentlyContinue }
+      Remove-ItemProperty -Path $runPath -Name "ArkServerManager" -ErrorAction SilentlyContinue
+      Write-Host "Start with Windows is disabled in Ark Manager settings." -ForegroundColor DarkGray
+      return
+    }
+
     $launcher = Join-Path $projectRoot "StartArkManagerAtLogon.vbs"
     if (-not (Test-Path -LiteralPath $launcher)) {
       Write-Host "StartArkManagerAtLogon.vbs was not found; skipping Windows startup registration." -ForegroundColor Yellow
@@ -315,7 +337,6 @@ function Ensure-WindowsStartup {
       New-Item -ItemType Directory -Path $startupDir -Force | Out-Null
     }
 
-    $legacyLnk = Join-Path $startupDir "Ark Server Manager.lnk"
     if (Test-Path -LiteralPath $legacyLnk) {
       Remove-Item -LiteralPath $legacyLnk -Force -ErrorAction SilentlyContinue
     }
@@ -331,11 +352,10 @@ function Ensure-WindowsStartup {
     )
     Set-Content -LiteralPath $entryPath -Value $lines -Encoding ASCII -Force
 
-    # Also register HKCU Run as a backup (same target as Startup).
     $wscript = Join-Path $env:SystemRoot "System32\wscript.exe"
     $runValue = "`"$wscript`" //B //Nologo `"$launcher`""
-    New-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Force | Out-Null
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "ArkServerManager" -Value $runValue -Type String -Force
+    New-Item -Path $runPath -Force | Out-Null
+    Set-ItemProperty -Path $runPath -Name "ArkServerManager" -Value $runValue -Type String -Force
 
     Write-Host "Ark Server Manager will start with Windows (Startup + Run key)." -ForegroundColor Green
   } catch {

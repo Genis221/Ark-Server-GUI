@@ -789,6 +789,17 @@ function updateHostMeters(resources) {
   }
 }
 
+function updateStartWithWindows(host) {
+  const wrap = document.getElementById("host-startup-wrap");
+  const box = document.getElementById("btn-start-with-windows");
+  if (!wrap || !box) return;
+  const win = String(host?.platform || "").toLowerCase() === "win32";
+  wrap.hidden = !win;
+  if (win && document.activeElement !== box) {
+    box.checked = host?.startWithWindows !== false;
+  }
+}
+
 function render() {
   renderTabs();
   renderServer(activeServer());
@@ -808,6 +819,7 @@ async function refreshState({ silent = false } = {}) {
     state.activity = data.activity || [];
     window.__arkHost = data.host || null;
     updateHostMeters(data.host?.resources);
+    updateStartWithWindows(data.host);
     if (!state.servers.find(s => s.id === state.activeId)) {
       state.activeId = state.servers[0]?.id || null;
     }
@@ -1133,6 +1145,21 @@ function applyTheme(theme) {
 }
 
 applyTheme(localStorage.getItem("ark-theme") === "light" ? "light" : "dark");
+
+document.getElementById("btn-start-with-windows")?.addEventListener("change", async event => {
+  const enabled = Boolean(event.target.checked);
+  event.target.disabled = true;
+  try {
+    await api("/api/manager/startup", { method: "POST", body: { enabled } });
+    if (window.__arkHost) window.__arkHost.startWithWindows = enabled;
+    toast(enabled ? "Will start with Windows" : "Won't start with Windows", "success");
+  } catch (err) {
+    event.target.checked = !enabled;
+    toast(err.message, "error");
+  } finally {
+    event.target.disabled = false;
+  }
+});
 
 document.getElementById("btn-restart-manager").addEventListener("click", async () => {
   const ok = await confirmDanger(
