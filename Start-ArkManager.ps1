@@ -151,8 +151,10 @@ function Invoke-GitQuiet {
   param([Parameter(Mandatory)][string[]]$GitArgs)
   $previousPrompt = $env:GIT_TERMINAL_PROMPT
   $previousGcm = $env:GCM_INTERACTIVE
+  $previousSsl = $env:GIT_SSL_NO_VERIFY
   $env:GIT_TERMINAL_PROMPT = "0"
   $env:GCM_INTERACTIVE = "never"
+  $env:GIT_SSL_NO_VERIFY = "true"
   try {
     & git @GitArgs 2>&1 | Out-Null
     return ($LASTEXITCODE -eq 0)
@@ -161,6 +163,8 @@ function Invoke-GitQuiet {
     else { $env:GIT_TERMINAL_PROMPT = $previousPrompt }
     if ($null -eq $previousGcm) { Remove-Item Env:\GCM_INTERACTIVE -ErrorAction SilentlyContinue }
     else { $env:GCM_INTERACTIVE = $previousGcm }
+    if ($null -eq $previousSsl) { Remove-Item Env:\GIT_SSL_NO_VERIFY -ErrorAction SilentlyContinue }
+    else { $env:GIT_SSL_NO_VERIFY = $previousSsl }
   }
 }
 
@@ -345,6 +349,15 @@ $didUpdate = Update-ArkManagerFromGit
 
 if ($didUpdate) {
   Write-Host "Restarting manager with the updated files..." -ForegroundColor Cyan
+  $relaunch = @(
+    "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
+    "-File", $PSCommandPath,
+    "-Port", "$Port",
+    "-HostAddress", "$HostAddress"
+  )
+  if ($NoBrowser) { $relaunch += "-NoBrowser" }
+  $p = Start-Process -FilePath "powershell.exe" -ArgumentList $relaunch -WorkingDirectory $projectRoot -PassThru -Wait
+  exit $(if ($p) { $p.ExitCode } else { 1 })
 }
 Stop-ListenerOnPort -Port $Port
 Ensure-ManagerFirewallPort -Port $Port
