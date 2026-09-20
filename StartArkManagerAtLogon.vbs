@@ -1,12 +1,11 @@
-' Starts Ark Server Manager at Windows logon (visible console, no browser).
-' Prefer the Startup entry managed by Start-ArkManager.ps1 / server.mjs.
+' Starts Ark Server Manager at Windows logon via CMD (silent, no browser).
 Option Explicit
-Dim sh, fso, scriptDir, ps1, cmd
+Dim sh, fso, scriptDir, launcher, cmd
 Set sh = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
-ps1 = scriptDir & "\Start-ArkManager.ps1"
-If Not fso.FileExists(ps1) Then WScript.Quit 1
-' 1 = normal visible window; False = do not wait.
-cmd = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File """ & ps1 & """ -NoBrowser"
-sh.Run cmd, 1, False
+launcher = scriptDir & "\Start Ark Manager.cmd"
+If Not fso.FileExists(launcher) Then WScript.Quit 1
+' 0 = hidden window; False = do not wait.
+cmd = "cmd.exe /c """ & launcher & """ silent"
+sh.Run cmd, 0, False
