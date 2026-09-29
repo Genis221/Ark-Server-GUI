@@ -1579,3 +1579,64 @@ workspace.addEventListener("change", event => {
 await refreshState();
 state.busy.clear();
 state.pollTimer = setInterval(() => refreshState({ silent: true }), 2000);
+
+let deferredInstallPrompt = null;
+
+function isStandaloneDisplay() {
+  return window.matchMedia("(display-mode: standalone)").matches
+    || window.navigator.standalone === true;
+}
+
+function isAndroidBrowser() {
+  return /android/i.test(navigator.userAgent || "");
+}
+
+function syncInstallButton() {
+  const btn = document.getElementById("btn-install-app");
+  if (!btn) return;
+  if (isStandaloneDisplay()) {
+    btn.hidden = true;
+    return;
+  }
+  // Chrome install prompt when available; otherwise keep a discoverable Android A2HS tip.
+  const canPrompt = Boolean(deferredInstallPrompt);
+  const showTip = isAndroidBrowser();
+  btn.hidden = !(canPrompt || showTip);
+  btn.textContent = canPrompt ? "Install App" : "Add to Home Screen";
+  btn.title = canPrompt
+    ? "Install Ark Manager on this device"
+    : "Open Chrome menu → Add to Home screen / Install app";
+}
+
+window.addEventListener("beforeinstallprompt", event => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  syncInstallButton();
+});
+
+window.addEventListener("appinstalled", () => {
+  deferredInstallPrompt = null;
+  syncInstallButton();
+  toast("Ark Manager installed", "success");
+});
+
+document.getElementById("btn-install-app")?.addEventListener("click", async () => {
+  if (!deferredInstallPrompt) {
+    toast("Chrome menu → Add to Home screen (or Install app)", "info");
+    return;
+  }
+  deferredInstallPrompt.prompt();
+  try {
+    const choice = await deferredInstallPrompt.userChoice;
+    if (choice?.outcome === "accepted") toast("Installing Ark Manager…", "success");
+  } catch { /* ignore */ }
+  deferredInstallPrompt = null;
+  syncInstallButton();
+});
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(err => {
+    console.warn("[pwa] service worker registration failed", err);
+  });
+}
+syncInstallButton();

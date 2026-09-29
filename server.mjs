@@ -53,6 +53,7 @@ const mime = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json",
+  ".webmanifest": "application/manifest+json",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -2195,7 +2196,17 @@ async function serveStatic(req, res, urlPath) {
   try {
     const data = await readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, { "Content-Type": mime[ext] || "application/octet-stream" });
+    const headers = {
+      "Content-Type": mime[ext] || "application/octet-stream"
+    };
+    // Keep the service worker and manifest fresh so installs pick up updates.
+    if (rel === "/sw.js" || rel === "/manifest.webmanifest") {
+      headers["Cache-Control"] = "no-cache";
+    }
+    if (rel === "/sw.js") {
+      headers["Service-Worker-Allowed"] = "/";
+    }
+    res.writeHead(200, headers);
     res.end(data);
   } catch {
     if (rel !== "/index.html") {

@@ -2,11 +2,19 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#10141c" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="description" content="Local web control panel for ARK: Survival Ascended dedicated servers." />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="application-name" content="Ark Manager" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Ark Manager" />
     <title>Ark: Survival Ascended Server Manager</title>
-    <link rel="icon" href="/ark-icon.jpg" type="image/jpeg" />
-    <link rel="apple-touch-icon" href="/ark-icon.jpg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon-192.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
     <link rel="stylesheet" href="/styles.css" />
     <script>
       (() => {
@@ -29,6 +37,7 @@
         </div>
         <div class="rail-tools">
           <button type="button" class="tool-btn tool-btn-wide" id="btn-restart-manager" title="Restart Server Manager and check for updates">Restart Server Manager</button>
+          <button type="button" class="tool-btn tool-btn-wide" id="btn-install-app" hidden title="Install Ark Manager on this device">Install App</button>
           <div class="rail-tools-row">
             <button type="button" class="tool-btn" id="btn-theme" title="Change to Light mode" aria-label="Change to Light mode">Change to Light mode</button>
             <button type="button" class="tool-btn" id="btn-copy-settings" title="Copy settings between profiles">Copy Server Settings</button>
@@ -76,7 +85,7 @@
       <div class="modal-body">
         <h2>Ark Server Manager</h2>
         <p>Web edition v1.0 — local control panel for ARK: Survival Ascended dedicated servers.</p>
-        <p class="muted">Use Start with Windows under Server Specs to launch the manager at logon. Game servers are left alone until their own auto-start schedules run.</p>
+        <p class="muted">Use Start with Windows under Server Specs to launch the manager at logon. On Android, use Install App or Chrome’s Add to Home Screen.</p>
         <div class="modal-actions">
           <button type="button" class="btn secondary" data-close>Close</button>
         </div>
