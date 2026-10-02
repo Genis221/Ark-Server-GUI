@@ -18,6 +18,7 @@ import {
   stat,
   writeFile
 } from "node:fs/promises";
+import { createAuthController } from "./auth.mjs";
 import { pipeline } from "node:stream/promises";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
@@ -192,6 +193,14 @@ function addActivity(message, level = "info") {
   state.activity = state.activity.slice(0, 100);
   scheduleSave();
 }
+
+const auth = createAuthController({
+  dataDir: DATA_DIR,
+  onActivity: (type, title, detail) => {
+    if (!state) return;
+    addActivity(detail ? `${title} — ${detail}` : title, type === "setup" ? "info" : "info");
+  }
+});
 
 function getServer(id) {
   return state.servers.find(s => s.id === id);
@@ -500,11 +509,10 @@ async function syncManagerWindowsStartup() {
 
 function sendJson(res, status, body) {
   const data = JSON.stringify(body);
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": Buffer.byteLength(data),
-    "Cache-Control": "no-store"
-  });
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Length", Buffer.byteLength(data));
+  res.setHeader("Cache-Control", "no-store");
   res.end(data);
 }
 
@@ -570,22 +578,24 @@ async function getRconPublic(server) {
   }
 }
 
-async function publicStateAsync() {
+async function publicStateAsync(user = null) {
   const ordered = [...state.servers].sort((a, b) => a.order - b.order);
   const servers = await Promise.all(ordered.map(async server => publicServer(server, await getRconPublic(server))));
   return {
     host: hostPublic(),
     servers,
-    activity: state.activity.slice(0, 40)
+    activity: state.activity.slice(0, 40),
+    user: user ? auth.publicUser(user) : null
   };
 }
 
-function publicState() {
+function publicState(user = null) {
   const ordered = [...state.servers].sort((a, b) => a.order - b.order);
   return {
     host: hostPublic(),
     servers: ordered.map(server => publicServer(server, server._rconPublic || null)),
-    activity: state.activity.slice(0, 40)
+    activity: state.activity.slice(0, 40),
+    user: user ? auth.publicUser(user) : null
   };
 }
 
@@ -2228,13 +2238,52 @@ async function handleApi(req, res, url) {
     return sendJson(res, 403, { error: "Only loopback/LAN clients are allowed. Set ARK_ALLOW_PUBLIC=true to allow all IPs." });
   }
 
-  const { pathname } = url;
+  const pathname = (url.pathname || "/").replace(/\/+$/, "") || "/";
   const method = req.method || "GET";
+  const parts = pathname.split("/").filter(Boolean);
+
+  if (pathname === "/api/auth/status" && method === "GET") {
+    return sendJson(res, 200, await auth.status(req));
+  }
+  if (pathname === "/api/auth/login" && method === "POST") {
+    const body = (await readBody(req)) || {};
+    const result = await auth.login(req, res, body);
+    return sendJson(res, 200, result);
+  }
+  if (pathname === "/api/auth/logout" && method === "POST") {
+    return sendJson(res, 200, await auth.logout(req, res));
+  }
+  if (pathname === "/api/auth/logout-all" && method === "POST") {
+    return sendJson(res, 200, await auth.logoutEverywhere(req, res));
+  }
+  if (pathname === "/api/auth/me" && method === "GET") {
+    const { user } = await auth.requireUser(req);
+    return sendJson(res, 200, { user: auth.publicUser(user) });
+  }
+  if (pathname === "/api/auth/users" && method === "GET") {
+    return sendJson(res, 200, await auth.listUsers(req));
+  }
+  if (pathname === "/api/auth/users" && method === "POST") {
+    const body = (await readBody(req)) || {};
+    return sendJson(res, 201, await auth.createUser(req, body));
+  }
+  if (parts[0] === "api" && parts[1] === "auth" && parts[2] === "users" && parts[3] && method === "DELETE") {
+    return sendJson(res, 200, await auth.deleteUser(req, parts[3]));
+  }
+  if (pathname === "/api/auth/change-password" && method === "POST") {
+    const body = (await readBody(req)) || {};
+    return sendJson(res, 200, await auth.changePassword(req, body));
+  }
+
+  if (!auth.isPublicApi(pathname, method)) {
+    await auth.requireUser(req);
+  }
 
   if (method === "GET" && pathname === "/api/state") {
+    const { user } = await auth.requireUser(req);
     await refreshAllRuntimes({ deep: false });
     scheduleRuntimeRefresh({ deep: true });
-    return sendJson(res, 200, await publicStateAsync());
+    return sendJson(res, 200, await publicStateAsync(user));
   }
 
   if (method === "POST" && pathname === "/api/manager/startup") {
@@ -2402,6 +2451,7 @@ async function handleApi(req, res, url) {
   }
 
   if (method === "DELETE" && !action) {
+    await auth.requireAdmin(req);
     if (state.servers.length <= 1) {
       return sendJson(res, 400, { error: "Cannot delete the last server profile" });
     }
@@ -2655,6 +2705,7 @@ async function handler(req, res) {
 
 async function main() {
   await loadState();
+  await auth.init();
   for (const server of state.servers) runtimeOf(server.id);
   await refreshAllRuntimes({ deep: false });
   scheduleRuntimeRefresh({ deep: true });

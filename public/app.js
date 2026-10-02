@@ -315,10 +315,13 @@ const state = {
   consoleServerId: null
 };
 
+let currentUser = null;
+
 const workspace = document.getElementById("workspace");
 const tabsEl = document.getElementById("tabs");
 const toastStack = document.getElementById("toast-stack");
 const infoDialog = document.getElementById("info-dialog");
+const accountsDialog = document.getElementById("accounts-dialog");
 const copyDialog = document.getElementById("copy-dialog");
 const confirmDialog = document.getElementById("confirm-dialog");
 const firewallDialog = document.getElementById("firewall-dialog");
@@ -383,14 +386,115 @@ function toast(message, type = "info") {
 }
 
 async function api(path, options = {}) {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+  const request = {
+    credentials: "same-origin",
     ...options,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined
-  });
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {})
+    }
+  };
+  if (request.body !== undefined && typeof request.body !== "string") {
+    request.body = JSON.stringify(request.body);
+  }
+  const res = await fetch(path, request);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (res.status === 401 && path !== "/api/auth/login" && path !== "/api/auth/status") {
+    currentUser = null;
+    renderLogin();
+    throw Object.assign(new Error(data.error || "Sign in required."), { status: 401 });
+  }
+  if (!res.ok) throw Object.assign(new Error(data.error || `Request failed (${res.status})`), { status: res.status });
   return data;
+}
+
+function isAdmin() {
+  return currentUser?.role === "admin";
+}
+
+function setAuthShell(signedIn) {
+  document.body.classList.toggle("auth-locked", !signedIn);
+  const app = document.querySelector(".app");
+  if (app) app.hidden = !signedIn;
+  const railAuth = document.getElementById("rail-auth");
+  if (railAuth) railAuth.hidden = !signedIn;
+  const userLabel = document.getElementById("rail-auth-user");
+  if (userLabel) {
+    userLabel.textContent = signedIn && currentUser
+      ? `${currentUser.username} · ${currentUser.role}`
+      : "";
+  }
+}
+
+function stopLiveUpdates() {
+  if (state.pollTimer) {
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+  if (state.consoleSource) {
+    try { state.consoleSource.close(); } catch { /* ignore */ }
+    state.consoleSource = null;
+    state.consoleServerId = null;
+  }
+}
+
+function renderLogin(errorMessage = "") {
+  setAuthShell(false);
+  stopLiveUpdates();
+  let root = document.getElementById("login-root");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "login-root";
+    document.body.prepend(root);
+  }
+  root.hidden = false;
+  root.innerHTML = `<section class="login-screen"><form class="login-card" id="login-form">
+    <img class="login-mark" src="/ark-icon.jpg" alt="" width="40" height="40" />
+    <p class="login-kicker">ASA control</p>
+    <h1>Sign in</h1>
+    <p>Operators only. Each person should use their own account.</p>
+    ${errorMessage ? `<p class="login-error">${escapeHtml(errorMessage)}</p>` : ""}
+    <label class="field"><span>Username</span><input name="username" autocomplete="username" required maxlength="32" /></label>
+    <label class="field"><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
+    <label class="login-remember"><input name="rememberMe" type="checkbox" /><span>Keep me logged in for 30 days</span></label>
+    <button class="btn primary login-submit" type="submit">Sign in</button>
+  </form></section>`;
+  root.querySelector("#login-form")?.elements?.username?.focus();
+}
+
+async function enterApp() {
+  setAuthShell(true);
+  const root = document.getElementById("login-root");
+  if (root) root.hidden = true;
+  await refreshState();
+  state.busy.clear();
+  if (!state.pollTimer) {
+    state.pollTimer = setInterval(() => refreshState({ silent: true }), 2000);
+  }
+}
+
+async function openAccountsDialog() {
+  if (!currentUser) return;
+  document.getElementById("accounts-current-user").textContent =
+    `${currentUser.username} (${currentUser.role})`;
+  const adminSection = document.getElementById("accounts-admin");
+  adminSection.hidden = !isAdmin();
+  if (isAdmin()) {
+    try {
+      const { users } = await api("/api/auth/users");
+      const list = document.getElementById("accounts-list");
+      list.innerHTML = (users || []).map(user => `
+        <div class="account-row">
+          <div><strong>${escapeHtml(user.username)}</strong><span>${escapeHtml(user.role)}</span></div>
+          ${user.id === currentUser.id
+            ? "<em>You</em>"
+            : `<button type="button" class="btn danger" data-delete-user="${escapeHtml(user.id)}" data-username="${escapeHtml(user.username)}">Remove</button>`}
+        </div>`).join("") || `<p class="muted">No accounts found.</p>`;
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+  if (!accountsDialog.open) accountsDialog.showModal();
 }
 
 function activeServer() {
@@ -808,6 +912,10 @@ function render() {
 async function refreshState({ silent = false } = {}) {
   try {
     const data = await api("/api/state");
+    if (data.user) {
+      currentUser = data.user;
+      setAuthShell(true);
+    }
     const prevFocus = document.activeElement;
     const focusKey = prevFocus?.dataset?.field
       ? `${prevFocus.closest("[data-server-id]")?.dataset.serverId}:${prevFocus.dataset.field}:${prevFocus.dataset.index ?? ""}`
@@ -852,6 +960,7 @@ async function refreshState({ silent = false } = {}) {
       }
     }
   } catch (err) {
+    if (err.status === 401) return;
     if (!silent) {
       workspace.innerHTML = `<div class="empty-view"><p>Could not reach manager API.<br>${escapeHtml(err.message)}</p></div>`;
     }
@@ -1196,10 +1305,124 @@ document.getElementById("btn-info").addEventListener("click", () => {
   const p = infoDialog.querySelector(".muted");
   if (p) {
     p.textContent = lans.length
-      ? `Any IP can connect. Examples: ${lans.join(" · ")}`
-      : "Listening on all interfaces (0.0.0.0). Use this PC's IP and port 3220 from other devices.";
+      ? `Sign-in required. LAN examples: ${lans.join(" · ")}`
+      : "Sign-in required. Listening on all interfaces (0.0.0.0). Use this PC's IP and port 3220 from other devices.";
   }
   infoDialog.showModal();
+});
+
+document.getElementById("btn-accounts")?.addEventListener("click", () => {
+  openAccountsDialog().catch(err => toast(err.message, "error"));
+});
+
+document.getElementById("btn-logout")?.addEventListener("click", async () => {
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+    currentUser = null;
+    toast("Signed out");
+    renderLogin();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+});
+
+document.getElementById("btn-logout-all")?.addEventListener("click", async () => {
+  try {
+    await api("/api/auth/logout-all", { method: "POST" });
+    currentUser = null;
+    accountsDialog.close();
+    toast("Signed out of every session");
+    renderLogin();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+});
+
+document.getElementById("accounts-list")?.addEventListener("click", async event => {
+  const btn = event.target.closest("[data-delete-user]");
+  if (!btn) return;
+  const username = btn.dataset.username || "this account";
+  const ok = await confirmDanger(
+    "Remove account",
+    `Remove “${username}”? They will no longer be able to sign in.`,
+    "Remove"
+  );
+  if (!ok) return;
+  try {
+    await api(`/api/auth/users/${btn.dataset.deleteUser}`, { method: "DELETE" });
+    toast("Account removed");
+    await openAccountsDialog();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+});
+
+document.addEventListener("submit", async event => {
+  if (event.target.id === "login-form") {
+    event.preventDefault();
+    const form = event.target;
+    const submit = form.querySelector("button[type=submit]");
+    if (submit) submit.disabled = true;
+    try {
+      const result = await api("/api/auth/login", {
+        method: "POST",
+        body: {
+          username: form.elements.username.value.trim(),
+          password: form.elements.password.value,
+          rememberMe: form.elements.rememberMe.checked
+        }
+      });
+      currentUser = result.user;
+      toast(result.rememberMe ? "Signed in — this device stays logged in for 30 days" : "Signed in");
+      await enterApp();
+    } catch (err) {
+      renderLogin(err.message || "Could not sign in.");
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+    return;
+  }
+  if (event.target.id === "change-password-form") {
+    event.preventDefault();
+    const form = event.target;
+    if (form.elements.newPassword.value !== form.elements.confirmPassword.value) {
+      toast("New password and confirmation do not match", "error");
+      return;
+    }
+    try {
+      await api("/api/auth/change-password", {
+        method: "POST",
+        body: {
+          currentPassword: form.elements.currentPassword.value,
+          newPassword: form.elements.newPassword.value
+        }
+      });
+      form.reset();
+      toast("Password updated");
+    } catch (err) {
+      toast(err.message, "error");
+    }
+    return;
+  }
+  if (event.target.id === "create-user-form") {
+    event.preventDefault();
+    const form = event.target;
+    try {
+      await api("/api/auth/users", {
+        method: "POST",
+        body: {
+          username: form.elements.username.value.trim(),
+          password: form.elements.password.value,
+          role: form.elements.role.value
+        }
+      });
+      form.reset();
+      toast("Account created");
+      await openAccountsDialog();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
 });
 document.getElementById("btn-copy-settings").addEventListener("click", () => {
   if (state.servers.length < 2) {
@@ -1576,9 +1799,17 @@ workspace.addEventListener("change", event => {
   }
 });
 
-await refreshState();
-state.busy.clear();
-state.pollTimer = setInterval(() => refreshState({ silent: true }), 2000);
+try {
+  const status = await api("/api/auth/status");
+  if (!status.authenticated) {
+    renderLogin();
+  } else {
+    currentUser = status.user;
+    await enterApp();
+  }
+} catch (err) {
+  workspace.innerHTML = `<div class="empty-view"><p>Could not reach manager API.<br>${escapeHtml(err.message)}</p></div>`;
+}
 
 let deferredInstallPrompt = null;
 
