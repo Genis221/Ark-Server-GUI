@@ -15,9 +15,10 @@ if not errorlevel 1 (
   git rev-parse --is-inside-work-tree >nul 2>&1
   if not errorlevel 1 (
     if not defined SILENT echo Checking GitHub for updates...
-    git fetch --prune --no-tags origin +refs/heads/main:refs/remotes/origin/main 2>nul
-    if errorlevel 1 git fetch --prune --no-tags https://github.com/Genis221/Ark-Server-GUI.git +refs/heads/main:refs/remotes/origin/main 2>nul
-    git reset --hard origin/main 2>nul
+    git fetch --prune --no-tags origin +refs/heads/main:refs/remotes/origin/main >nul 2>&1
+    if errorlevel 1 git fetch --prune --no-tags https://github.com/Genis221/Ark-Server-GUI.git +refs/heads/main:refs/remotes/origin/main >nul 2>&1
+    REM Quiet reset so commit subjects (e.g. past "BlockSmith-style login" wording) never flash in the console.
+    git reset --hard origin/main >nul 2>&1
     if not errorlevel 1 if not defined SILENT echo Updated launcher files from GitHub.
   )
 )
