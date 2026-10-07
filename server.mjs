@@ -318,6 +318,8 @@ let hostCpuSample = null;
 let cachedHostResources = null;
 let cachedRamSpeedMHz = null;
 let ramSpeedProbe = null;
+let cachedRamBreakdown = null;
+let ramBreakdownRunning = false;
 
 function readCpuTimes() {
   let idle = 0;
@@ -384,6 +386,184 @@ function ensureRamSpeedProbe() {
     .catch(() => { cachedRamSpeedMHz = null; });
 }
 
+async function captureProcess(command, args, timeoutMs = 20000) {
+  try {
+    const { stdout, stderr } = await execFileAsync(command, args, {
+      windowsHide: true,
+      timeout: timeoutMs,
+      maxBuffer: 24 * 1024 * 1024
+    });
+    return { output: `${stdout || ""}${stderr || ""}`, code: 0 };
+  } catch (err) {
+    return {
+      output: `${err.stdout || ""}${err.stderr || err.message || ""}`,
+      code: typeof err.code === "number" ? err.code : 1
+    };
+  }
+}
+
+function parseCsvLine(line) {
+  const cols = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (ch === "," && !inQuotes) {
+      cols.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  cols.push(current);
+  return cols;
+}
+
+function parseWmicCsv(output) {
+  const lines = String(output || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (lines.length < 2) return [];
+  const headers = parseCsvLine(lines[0]).map(header => header.trim().replace(/^"|"$/g, ""));
+  const rows = [];
+  for (const line of lines.slice(1)) {
+    const cols = parseCsvLine(line);
+    const row = {};
+    headers.forEach((header, index) => { row[header] = cols[index] ?? ""; });
+    rows.push(row);
+  }
+  return rows;
+}
+
+function mapWindowsProcessRows(rows) {
+  return rows.map(row => ({
+    pid: Number(row.ProcessId) || 0,
+    parentPid: Number(row.ParentProcessId) || 0,
+    name: String(row.Name || ""),
+    commandLine: String(row.CommandLine || ""),
+    memoryBytes: Number(row.WorkingSetSize) || 0
+  })).filter(proc => proc.pid > 0);
+}
+
+function parseTasklistMemoryBytes(memField) {
+  const match = String(memField || "").replace(/"/g, "").match(/([\d.,]+)\s*K/i);
+  if (!match) return 0;
+  const kilobytes = Number(match[1].replace(/,/g, ""));
+  return Number.isFinite(kilobytes) ? Math.round(kilobytes * 1024) : 0;
+}
+
+async function listWindowsProcessesViaCim() {
+  const script = "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,WorkingSetSize | Select-Object ProcessId,ParentProcessId,Name,CommandLine,WorkingSetSize | ConvertTo-Csv -NoTypeInformation";
+  const result = await captureProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], 25000);
+  return mapWindowsProcessRows(parseWmicCsv(result.output));
+}
+
+async function listWindowsProcessesViaWmic() {
+  const wmic = await captureProcess("wmic", ["process", "get", "ProcessId,ParentProcessId,Name,CommandLine,WorkingSetSize", "/FORMAT:CSV"], 20000);
+  return mapWindowsProcessRows(parseWmicCsv(wmic.output));
+}
+
+async function listWindowsProcessesViaTasklist() {
+  const listed = await captureProcess("tasklist.exe", ["/FO", "CSV", "/NH"], 8000);
+  const procs = [];
+  for (const line of String(listed.output || "").split(/\r?\n/)) {
+    const match = line.match(/^"([^"]+)","(\d+)","([^"]*)","([^"]*)","([^"]*)"/);
+    if (!match) continue;
+    procs.push({
+      pid: Number(match[2]) || 0,
+      parentPid: 0,
+      name: match[1],
+      commandLine: "",
+      memoryBytes: parseTasklistMemoryBytes(match[5])
+    });
+  }
+  return procs.filter(proc => proc.pid > 0);
+}
+
+async function listWindowsProcesses() {
+  if (process.platform !== "win32") return [];
+  for (const loader of [listWindowsProcessesViaCim, listWindowsProcessesViaWmic, listWindowsProcessesViaTasklist]) {
+    try {
+      const procs = await loader();
+      if (procs.length) return procs;
+    } catch { /* try next enumerator */ }
+  }
+  return [];
+}
+
+function classifyGameProcess(proc) {
+  const name = String(proc?.name || "").toLowerCase();
+  const cmd = String(proc?.commandLine || "").toLowerCase();
+  const hay = `${name} ${cmd}`;
+  if (/shootergame|arkascended|asaapi|ark.*server|asaserver|arkdevkit/.test(hay)) return "ark";
+  if (/7daystodie|7dtd/.test(hay)) return "sevendays";
+  if (/\bicarus\b/.test(hay)) return "icarus";
+  if (/bedrock_server|minecraft\.windows|minecraftlauncher/.test(name)) return "minecraft";
+  if (/^javaw?\.exe$/.test(name)) {
+    if (/minecraft|forge|fabric|neoforge|paper|spigot|purpur|quilt|bukkit|server\.jar|user_jvm_args|libraries[/\\]net[/\\](minecraftforge|minecraft|fabricmc)/.test(cmd)) {
+      return "minecraft";
+    }
+    return null;
+  }
+  if (/minecraft|forge|fabric|neoforge|paperclip/.test(hay) && /\.exe$/.test(name)) return "minecraft";
+  return null;
+}
+
+async function sampleHostRamBreakdown() {
+  if (ramBreakdownRunning || process.platform !== "win32") return;
+  ramBreakdownRunning = true;
+  try {
+    const procs = await listWindowsProcesses();
+    const byPid = new Map(procs.map(proc => [proc.pid, proc]));
+    const totals = { minecraft: 0, icarus: 0, sevendays: 0, ark: 0 };
+    const counted = new Set();
+    for (const proc of procs) {
+      const group = classifyGameProcess(proc);
+      if (!group || counted.has(proc.pid)) continue;
+      counted.add(proc.pid);
+      totals[group] += Number(proc.memoryBytes) || 0;
+    }
+    // Catch managed ASA processes if command-line classification missed them.
+    for (const server of state?.servers || []) {
+      const runtime = runtimes.get(server.id);
+      const pid = Number(runtime?.pid) || 0;
+      if (!pid || counted.has(pid)) continue;
+      const bytes = Number(byPid.get(pid)?.memoryBytes) || 0;
+      if (bytes <= 0) continue;
+      counted.add(pid);
+      totals.ark += bytes;
+    }
+    const totalMem = os.totalmem();
+    const usedMem = Math.max(0, totalMem - os.freemem());
+    const known = totals.minecraft + totals.icarus + totals.sevendays + totals.ark;
+    const other = Math.max(0, usedMem - known);
+    const catalog = [
+      { id: "minecraft", label: "Minecraft", color: "minecraft", bytes: totals.minecraft },
+      { id: "icarus", label: "Icarus", color: "icarus", bytes: totals.icarus },
+      { id: "sevendays", label: "7 Days", color: "sevendays", bytes: totals.sevendays },
+      { id: "ark", label: "ARK", color: "ark", bytes: totals.ark },
+      { id: "other", label: "System", color: "other", bytes: other }
+    ];
+    cachedRamBreakdown = {
+      segments: catalog
+        .filter(item => item.bytes > 0)
+        .map(item => ({
+          ...item,
+          labelShort: item.label,
+          bytesLabel: formatBytes(item.bytes),
+          percentOfTotal: totalMem ? Math.round((item.bytes / totalMem) * 1000) / 10 : 0
+        })),
+      sampledAt: nowIso()
+    };
+  } catch {
+    /* Host RAM game breakdown is best-effort. */
+  } finally {
+    ramBreakdownRunning = false;
+  }
+}
+
 function refreshHostResources() {
   ensureRamSpeedProbe();
   const totalMem = os.totalmem();
@@ -413,7 +593,8 @@ function refreshHostResources() {
     ramUsedLabel: formatBytes(usedMem),
     ramFreeLabel: formatBytes(freeMem),
     ramSpeedMHz: cachedRamSpeedMHz,
-    ramSpeedLabel
+    ramSpeedLabel,
+    ramSegments: cachedRamBreakdown?.segments || []
   };
   return cachedHostResources;
 }
@@ -2714,6 +2895,11 @@ async function main() {
   setInterval(() => {
     try { refreshHostResources(); } catch { /* ignore */ }
   }, 2000);
+
+  sampleHostRamBreakdown().catch(() => {});
+  setInterval(() => {
+    sampleHostRamBreakdown().catch(() => {});
+  }, 3000);
 
   setInterval(() => {
     scheduleRuntimeRefresh({ deep: true });
