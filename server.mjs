@@ -445,8 +445,20 @@ function parseTasklistMemoryBytes(memField) {
 }
 
 async function listWindowsProcessesViaCim() {
-  const script = "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath,WorkingSetSize | Select-Object ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath,WorkingSetSize | ConvertTo-Csv -NoTypeInformation";
-  const result = await captureProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], 25000);
+  // Only pull likely game-server processes — full-system CIM dumps spike host CPU every few seconds.
+  const script = [
+    "$props = 'ProcessId','ParentProcessId','Name','CommandLine','ExecutablePath','WorkingSetSize'",
+    "Get-CimInstance Win32_Process -Property $props |",
+    "  Where-Object {",
+    "    $n = [string]$_.Name; $c = [string]$_.CommandLine; $e = [string]$_.ExecutablePath;",
+    "    $n -match '^(java|javaw|ArkAscendedServer|ShooterGameServer|IcarusServer|Icarus|7DaysToDie|7DaysToDieServer|bedrock_server)(\\.exe)?$' -or",
+    "    $c -match 'neoforge|neoforged|minecraft|fabric|paper|spigot|user_jvm_args|ArkAscended|ShooterGame|Icarus|7DaysToDie|7dtd' -or",
+    "    $e -match 'ArkAscended|ShooterGame|Icarus|7DaysToDie|Minecraft|neoforge|BlockSmith'",
+    "  } |",
+    "  Select-Object ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath,WorkingSetSize |",
+    "  ConvertTo-Csv -NoTypeInformation"
+  ].join(" ");
+  const result = await captureProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], 15000);
   return mapWindowsProcessRows(parseWmicCsv(result.output));
 }
 
@@ -550,10 +562,12 @@ async function sampleHostRamBreakdown() {
   if (ramBreakdownRunning || process.platform !== "win32") return;
   ramBreakdownRunning = true;
   try {
-    const [procs, listeningMcPids] = await Promise.all([
-      listWindowsProcesses(),
-      listListeningPidsPreferMinecraft()
-    ]);
+    const procs = await listWindowsProcesses();
+    const needsPortHint = procs.some(proc => {
+      if (classifyGameProcess(proc, null)) return false;
+      return isJavaProcessName(proc.name) || /[/\\]javaw?\.exe$/i.test(proc.executablePath || "");
+    });
+    const listeningMcPids = needsPortHint ? await listListeningPidsPreferMinecraft() : new Set();
     const byPid = new Map(procs.map(proc => [proc.pid, proc]));
     const totals = { minecraft: 0, icarus: 0, sevendays: 0, ark: 0 };
     const counted = new Set();
@@ -784,16 +798,24 @@ function publicServer(server, rcon = null) {
   };
 }
 
+const rconPublicCache = new Map(); // serverId -> { at, value }
+
 async function getRconPublic(server) {
+  const cached = rconPublicCache.get(server.id);
+  if (cached && Date.now() - cached.at < 15000) return cached.value;
   try {
     const settings = await readRconSettings(gusIniPath(server), server.launchArgs);
-    return {
+    const value = {
       enabled: settings.enabled,
       port: settings.port,
       hasPassword: Boolean(settings.password)
     };
+    rconPublicCache.set(server.id, { at: Date.now(), value });
+    return value;
   } catch {
-    return { enabled: false, port: 27020, hasPassword: false };
+    const value = { enabled: false, port: 27020, hasPassword: false };
+    rconPublicCache.set(server.id, { at: Date.now(), value });
+    return value;
   }
 }
 
@@ -1557,7 +1579,7 @@ async function listArkProcesses() {
   }
 }
 
-async function getArkProcessesCached(maxAgeMs = 2500) {
+async function getArkProcessesCached(maxAgeMs = 5000) {
   if (Date.now() - processCache.at < maxAgeMs) return processCache.procs;
   processCache.procs = await listArkProcesses();
   processCache.at = Date.now();
@@ -1677,7 +1699,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
 }
 
 async function refreshAllRuntimes({ deep = false } = {}) {
-  const procs = await getArkProcessesCached(deep ? 0 : 2500);
+  const procs = await getArkProcessesCached(deep ? 0 : 5000);
   await Promise.all(state.servers.map(server => refreshRuntime(server, { deep, procs })));
 }
 
@@ -2500,8 +2522,8 @@ async function handleApi(req, res, url) {
 
   if (method === "GET" && pathname === "/api/state") {
     const { user } = await auth.requireUser(req);
+    // Light status only — deep A2S/log probes run on the background interval.
     await refreshAllRuntimes({ deep: false });
-    scheduleRuntimeRefresh({ deep: true });
     return sendJson(res, 200, await publicStateAsync(user));
   }
 
@@ -2932,20 +2954,20 @@ async function main() {
   syncManagerWindowsStartup().catch(err => console.warn("[startup]", err.message));
   setInterval(() => {
     try { refreshHostResources(); } catch { /* ignore */ }
-  }, 2000);
+  }, 3000);
 
   sampleHostRamBreakdown().catch(() => {});
   setInterval(() => {
     sampleHostRamBreakdown().catch(() => {});
-  }, 3000);
+  }, 15000);
 
   setInterval(() => {
     scheduleRuntimeRefresh({ deep: true });
-  }, 8000);
+  }, 12000);
 
   setInterval(() => {
     refreshPlayersForRunningServers().catch(err => console.error("[player refresh]", err));
-  }, 5000);
+  }, 10000);
 
   setInterval(() => {
     automationTick().catch(err => console.error("[automation]", err));

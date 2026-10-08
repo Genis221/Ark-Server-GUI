@@ -469,7 +469,7 @@ async function enterApp() {
   await refreshState();
   state.busy.clear();
   if (!state.pollTimer) {
-    state.pollTimer = setInterval(() => refreshState({ silent: true }), 2000);
+    state.pollTimer = setInterval(() => refreshState({ silent: true }), 4000);
   }
 }
 
