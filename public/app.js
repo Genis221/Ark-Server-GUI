@@ -313,9 +313,13 @@ const state = {
   repairPrompted: new Set(),
   consoleSource: null,
   consoleServerId: null,
-  iniConfigByServer: new Map(),
+  iniConfigByServer: new Map(), // key: `${serverId}:${kind}`
   iniSaveTimers: new Map()
 };
+
+function iniCacheKey(serverId, kind) {
+  return `${serverId}:${kind === "game" ? "game" : "gus"}`;
+}
 
 let currentUser = null;
 
@@ -639,9 +643,9 @@ function rconHint(server) {
   return `RCON ready on TCP ${rcon.port || "?"} · players auto-refresh`;
 }
 
-function iniFieldControl(def, value) {
-  const val = value ?? def.default ?? "";
-  const common = `data-ini-field="${escapeHtml(def.id)}" data-ini-type="${escapeHtml(def.type)}"`;
+function iniFieldControl(def, value, kind) {
+  const val = value ?? "";
+  const common = `data-ini-field="${escapeHtml(def.id)}" data-ini-kind="${escapeHtml(kind)}" data-ini-type="${escapeHtml(def.type)}"`;
   if (def.type === "bool" || (Array.isArray(def.options) && def.options.length)) {
     const options = (def.options || [
       { value: "True", label: "True" },
@@ -652,10 +656,7 @@ function iniFieldControl(def, value) {
     return `<select ${common}>${options}</select>`;
   }
   if (def.type === "number") {
-    const min = def.min != null ? ` min="${def.min}"` : "";
-    const max = def.max != null ? ` max="${def.max}"` : "";
-    const step = def.step != null ? ` step="${def.step}"` : ` step="any"`;
-    return `<input type="number"${min}${max}${step} ${common} value="${escapeHtml(val)}" />`;
+    return `<input type="number" step="any" ${common} value="${escapeHtml(val)}" />`;
   }
   if (def.type === "password") {
     return `<input type="password" autocomplete="new-password" ${common} value="${escapeHtml(val)}" />`;
@@ -663,113 +664,104 @@ function iniFieldControl(def, value) {
   return `<input type="text" ${common} value="${escapeHtml(val)}" />`;
 }
 
-function renderIniConfigPanel(server) {
-  const cached = state.iniConfigByServer.get(server.id);
+function renderIniFilePanel(server, kind) {
+  const key = iniCacheKey(server.id, kind);
+  const cached = state.iniConfigByServer.get(key);
+  const openAction = kind === "game" ? "open-game-ini" : "open-gus-ini";
+  const fileLabel = kind === "game" ? "Game.ini" : "GameUserSettings.ini";
+
   if (!server.install) {
-    return `<p class="muted">Set an install location first to edit Game.ini / GameUserSettings.ini.</p>`;
+    return `<p class="muted">Set an install location first to edit ${escapeHtml(fileLabel)}.</p>`;
   }
   if (!cached) {
     return `
-      <p class="muted ini-config-status">Loading settings from INI files…</p>
+      <p class="muted ini-config-status">Loading all keys from ${escapeHtml(fileLabel)}…</p>
       <div class="action-row">
-        <button type="button" class="btn secondary" data-action="reload-ini-config">Reload</button>
-        <button type="button" class="btn secondary" data-action="open-game-ini">Open Game.ini</button>
-        <button type="button" class="btn secondary" data-action="open-gus-ini">Open GameUserSettings.ini</button>
+        <button type="button" class="btn secondary" data-action="reload-ini-config" data-ini-kind="${kind}">Reload</button>
+        <button type="button" class="btn secondary" data-action="${openAction}">Open file</button>
       </div>`;
   }
   if (cached.error) {
     return `
       <p class="ini-config-error">${escapeHtml(cached.error)}</p>
       <div class="action-row">
-        <button type="button" class="btn secondary" data-action="reload-ini-config">Retry</button>
-        <button type="button" class="btn secondary" data-action="open-game-ini">Open Game.ini</button>
-        <button type="button" class="btn secondary" data-action="open-gus-ini">Open GameUserSettings.ini</button>
+        <button type="button" class="btn secondary" data-action="reload-ini-config" data-ini-kind="${kind}">Retry</button>
+        <button type="button" class="btn secondary" data-action="${openAction}">Open file</button>
       </div>`;
   }
 
-  const groups = [];
-  const seen = new Set();
-  for (const def of cached.schema || []) {
-    if (seen.has(def.group)) continue;
-    seen.add(def.group);
-    groups.push(def.group);
-  }
-
-  const blocks = groups.map(group => {
-    const fields = (cached.schema || []).filter(def => def.group === group);
-    const fileHint = fields[0]?.file === "game" ? "Game.ini" : "GameUserSettings.ini";
-    return `
+  const sections = cached.sections || [];
+  const blocks = sections.length
+    ? sections.map(section => `
       <div class="ini-group">
         <div class="ini-group-head">
-          <h3>${escapeHtml(group)}</h3>
-          <span>${escapeHtml(fileHint)}</span>
+          <h3>${escapeHtml(section.name)}</h3>
+          <span>${section.fields.length} setting${section.fields.length === 1 ? "" : "s"}</span>
         </div>
         <div class="ini-grid">
-          ${fields.map(def => `
+          ${section.fields.map(def => `
             <label class="field">
-              <span>${escapeHtml(def.label)}</span>
-              ${iniFieldControl(def, cached.values?.[def.id])}
+              <span title="${escapeHtml(def.key)}">${escapeHtml(def.label)}</span>
+              ${iniFieldControl(def, cached.values?.[def.id], kind)}
             </label>`).join("")}
         </div>
-      </div>`;
-  }).join("");
+      </div>`).join("")
+    : `<p class="muted">No settings found in ${escapeHtml(fileLabel)} yet. They’ll appear here after the server creates the file.</p>`;
 
-  const missing = [];
-  if (!cached.exists?.gameUserSettings) missing.push("GameUserSettings.ini");
-  if (!cached.exists?.game) missing.push("Game.ini");
-  const notice = missing.length
-    ? `<p class="muted">Missing on disk (will be created on save): ${missing.map(escapeHtml).join(", ")}</p>`
-    : `<p class="muted">Values load from and save to the server INI files. Restart the game server to apply many settings.</p>`;
+  const notice = cached.exists
+    ? `<p class="muted">Every key from ${escapeHtml(fileLabel)} is listed below. Changes auto-save. Restart the game server to apply many settings.</p>`
+    : `<p class="muted">${escapeHtml(fileLabel)} is missing on disk — saving a value will create it.</p>`;
 
   return `
     ${notice}
     <div class="ini-groups">${blocks}</div>
     <div class="action-row ini-config-actions">
-      <button type="button" class="btn secondary" data-action="reload-ini-config">Reload from disk</button>
-      <button type="button" class="btn secondary" data-action="open-game-ini">Open Game.ini</button>
-      <button type="button" class="btn secondary" data-action="open-gus-ini">Open GameUserSettings.ini</button>
-      <span class="ini-save-status" data-ini-save-status>${escapeHtml(cached.saveStatus || "")}</span>
+      <button type="button" class="btn secondary" data-action="reload-ini-config" data-ini-kind="${kind}">Reload from disk</button>
+      <button type="button" class="btn secondary" data-action="${openAction}">Open ${escapeHtml(fileLabel)}</button>
+      <span class="ini-save-status" data-ini-save-status data-ini-kind="${kind}">${escapeHtml(cached.saveStatus || `${cached.fieldCount || 0} settings`)}</span>
     </div>`;
 }
 
-async function loadIniConfig(serverId, { force = false } = {}) {
+async function loadIniConfig(serverId, kind = "gus", { force = false } = {}) {
   const server = state.servers.find(s => s.id === serverId);
   if (!server?.install) return;
-  if (!force && state.iniConfigByServer.has(serverId) && !state.iniConfigByServer.get(serverId)?.error) {
-    return state.iniConfigByServer.get(serverId);
+  const cacheKey = iniCacheKey(serverId, kind);
+  if (!force && state.iniConfigByServer.has(cacheKey) && !state.iniConfigByServer.get(cacheKey)?.error) {
+    return state.iniConfigByServer.get(cacheKey);
   }
   try {
-    const data = await api(`/api/servers/${serverId}/ini-config`);
-    state.iniConfigByServer.set(serverId, { ...data, saveStatus: "" });
+    const data = await api(`/api/servers/${serverId}/ini-config?kind=${encodeURIComponent(kind)}`);
+    state.iniConfigByServer.set(cacheKey, { ...data, saveStatus: `${data.fieldCount || 0} settings` });
   } catch (err) {
-    state.iniConfigByServer.set(serverId, { error: err.message || "Could not load INI settings" });
+    state.iniConfigByServer.set(cacheKey, { error: err.message || "Could not load INI settings", kind });
   }
-  const panel = workspace.querySelector(`[data-ini-config="${serverId}"]`);
-  if (panel) panel.innerHTML = renderIniConfigPanel(server);
-  return state.iniConfigByServer.get(serverId);
+  const panel = workspace.querySelector(`[data-ini-config="${serverId}"][data-ini-kind="${kind}"]`);
+  if (panel) panel.innerHTML = renderIniFilePanel(server, kind);
+  return state.iniConfigByServer.get(cacheKey);
 }
 
-function scheduleIniSave(serverId, fieldId, value) {
-  const cached = state.iniConfigByServer.get(serverId);
+function scheduleIniSave(serverId, kind, fieldId, value) {
+  const cacheKey = iniCacheKey(serverId, kind);
+  const cached = state.iniConfigByServer.get(cacheKey);
   if (!cached || cached.error) return;
   cached.values = { ...(cached.values || {}), [fieldId]: value };
   cached.saveStatus = "Saving…";
-  const status = workspace.querySelector(`[data-ini-config="${serverId}"] [data-ini-save-status]`);
+  const status = workspace.querySelector(`[data-ini-config="${serverId}"][data-ini-kind="${kind}"] [data-ini-save-status]`);
   if (status) status.textContent = "Saving…";
-  if (state.iniSaveTimers.has(serverId)) clearTimeout(state.iniSaveTimers.get(serverId));
-  state.iniSaveTimers.set(serverId, setTimeout(async () => {
-    state.iniSaveTimers.delete(serverId);
+  if (state.iniSaveTimers.has(cacheKey)) clearTimeout(state.iniSaveTimers.get(cacheKey));
+  state.iniSaveTimers.set(cacheKey, setTimeout(async () => {
+    state.iniSaveTimers.delete(cacheKey);
     try {
       const result = await api(`/api/servers/${serverId}/ini-config`, {
         method: "PATCH",
-        body: { fields: { [fieldId]: value } }
+        body: { kind, fields: { [fieldId]: value } }
       });
-      state.iniConfigByServer.set(serverId, { ...result, saveStatus: "Saved" });
-      const panel = workspace.querySelector(`[data-ini-config="${serverId}"]`);
+      state.iniConfigByServer.set(cacheKey, { ...result, saveStatus: "Saved" });
+      const panel = workspace.querySelector(`[data-ini-config="${serverId}"][data-ini-kind="${kind}"]`);
       const active = document.activeElement;
       const activeField = active?.dataset?.iniField;
       if (panel && activeField !== fieldId) {
-        panel.innerHTML = renderIniConfigPanel(state.servers.find(s => s.id === serverId));
+        panel.innerHTML = renderIniFilePanel(state.servers.find(s => s.id === serverId), kind);
       } else if (status) {
         status.textContent = "Saved";
       } else if (panel) {
@@ -778,7 +770,7 @@ function scheduleIniSave(serverId, fieldId, value) {
       }
     } catch (err) {
       if (cached) cached.saveStatus = err.message || "Save failed";
-      const el = workspace.querySelector(`[data-ini-config="${serverId}"] [data-ini-save-status]`);
+      const el = workspace.querySelector(`[data-ini-config="${serverId}"][data-ini-kind="${kind}"] [data-ini-save-status]`);
       if (el) el.textContent = err.message || "Save failed";
       toast(err.message || "Could not save INI setting", "error");
     }
@@ -887,11 +879,20 @@ function renderServer(server) {
             </div>
           </section>
 
-          <section class="section ${open("config")}" data-section="config">
-            <button type="button" class="section-toggle"><span class="chev">▶</span> Server Configuration</button>
+          <section class="section ${open("game-ini")}" data-section="game-ini">
+            <button type="button" class="section-toggle"><span class="chev">▶</span> Game.ini</button>
             <div class="section-body">
-              <div class="ini-config" data-ini-config="${server.id}">
-                ${renderIniConfigPanel(server)}
+              <div class="ini-config" data-ini-config="${server.id}" data-ini-kind="game">
+                ${renderIniFilePanel(server, "game")}
+              </div>
+            </div>
+          </section>
+
+          <section class="section ${open("gus-ini")}" data-section="gus-ini">
+            <button type="button" class="section-toggle"><span class="chev">▶</span> GameUserSettings.ini</button>
+            <div class="section-body">
+              <div class="ini-config" data-ini-config="${server.id}" data-ini-kind="gus">
+                ${renderIniFilePanel(server, "gus")}
               </div>
             </div>
           </section>
@@ -969,8 +970,11 @@ function renderServer(server) {
   `;
 
   connectConsole(server.id);
-  if (state.openSections.has(`${server.id}:config`)) {
-    loadIniConfig(server.id).catch(() => {});
+  if (state.openSections.has(`${server.id}:game-ini`)) {
+    loadIniConfig(server.id, "game").catch(() => {});
+  }
+  if (state.openSections.has(`${server.id}:gus-ini`)) {
+    loadIniConfig(server.id, "gus").catch(() => {});
   }
 }
 
@@ -1097,7 +1101,7 @@ async function refreshState({ silent = false } = {}) {
       ? `${prevFocus.closest("[data-server-id]")?.dataset.serverId}:${prevFocus.dataset.field}:${prevFocus.dataset.index ?? ""}`
       : null;
     const iniFocus = prevFocus?.dataset?.iniField
-      ? `${prevFocus.closest("[data-server-id]")?.dataset.serverId}:${prevFocus.dataset.iniField}`
+      ? `${prevFocus.closest("[data-server-id]")?.dataset.serverId}:${prevFocus.dataset.iniKind || "gus"}:${prevFocus.dataset.iniField}`
       : null;
     const selectionStart = prevFocus?.selectionStart;
     const selectionEnd = prevFocus?.selectionEnd;
@@ -1141,8 +1145,11 @@ async function refreshState({ silent = false } = {}) {
         }
       }
     } else if (iniFocus) {
-      const [id, field] = iniFocus.split(":");
-      const el = workspace.querySelector(`[data-server-id="${id}"] [data-ini-field="${field}"]`);
+      const [id, kind, ...fieldParts] = iniFocus.split(":");
+      const field = fieldParts.join(":");
+      const el = workspace.querySelector(
+        `[data-server-id="${id}"] [data-ini-kind="${kind}"][data-ini-field="${CSS.escape(field)}"]`
+      );
       if (el) {
         el.focus();
         if (typeof selectionStart === "number" && el.setSelectionRange) {
@@ -1670,21 +1677,26 @@ workspace.addEventListener("click", async event => {
     if (opening) state.openSections.add(full);
     else state.openSections.delete(full);
     section.classList.toggle("open", opening);
-    if (opening && key === "config") {
-      loadIniConfig(server.id).catch(err => toast(err.message, "error"));
+    if (opening && key === "game-ini") {
+      loadIniConfig(server.id, "game").catch(err => toast(err.message, "error"));
+    }
+    if (opening && key === "gus-ini") {
+      loadIniConfig(server.id, "gus").catch(err => toast(err.message, "error"));
     }
     return;
   }
 
-  const action = event.target.closest("[data-action]")?.dataset.action;
+  const actionBtn = event.target.closest("[data-action]");
+  const action = actionBtn?.dataset.action;
   if (!action) return;
   const server = activeServer();
   if (!server) return;
 
   try {
     if (action === "reload-ini-config") {
-      await loadIniConfig(server.id, { force: true });
-      toast("Reloaded INI settings");
+      const kind = actionBtn.dataset.iniKind || actionBtn.closest("[data-ini-kind]")?.dataset.iniKind || "gus";
+      await loadIniConfig(server.id, kind, { force: true });
+      toast(`Reloaded ${kind === "game" ? "Game.ini" : "GameUserSettings.ini"}`);
       return;
     }
     if (action === "toggle") {
@@ -1965,7 +1977,7 @@ workspace.addEventListener("input", event => {
   if (!server) return;
 
   if (el.dataset.iniField) {
-    scheduleIniSave(server.id, el.dataset.iniField, el.value);
+    scheduleIniSave(server.id, el.dataset.iniKind || "gus", el.dataset.iniField, el.value);
     return;
   }
 
@@ -2000,7 +2012,12 @@ workspace.addEventListener("change", event => {
   const server = activeServer();
   if (!server) return;
   if (el.dataset.iniField) {
-    scheduleIniSave(server.id, el.dataset.iniField, el.type === "checkbox" ? (el.checked ? "True" : "False") : el.value);
+    scheduleIniSave(
+      server.id,
+      el.dataset.iniKind || "gus",
+      el.dataset.iniField,
+      el.type === "checkbox" ? (el.checked ? "True" : "False") : el.value
+    );
     return;
   }
   if (el.closest("[data-launch-builder]") && el.hasAttribute("data-launch")) {
