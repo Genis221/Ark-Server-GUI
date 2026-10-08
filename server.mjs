@@ -445,20 +445,9 @@ function parseTasklistMemoryBytes(memField) {
 }
 
 async function listWindowsProcessesViaCim() {
-  // Only pull likely game-server processes — full-system CIM dumps spike host CPU every few seconds.
-  const script = [
-    "$props = 'ProcessId','ParentProcessId','Name','CommandLine','ExecutablePath','WorkingSetSize'",
-    "Get-CimInstance Win32_Process -Property $props |",
-    "  Where-Object {",
-    "    $n = [string]$_.Name; $c = [string]$_.CommandLine; $e = [string]$_.ExecutablePath;",
-    "    $n -match '^(java|javaw|ArkAscendedServer|ShooterGameServer|IcarusServer|Icarus|7DaysToDie|7DaysToDieServer|bedrock_server)(\\.exe)?$' -or",
-    "    $c -match 'neoforge|neoforged|minecraft|fabric|paper|spigot|user_jvm_args|ArkAscended|ShooterGame|Icarus|7DaysToDie|7dtd' -or",
-    "    $e -match 'ArkAscended|ShooterGame|Icarus|7DaysToDie|Minecraft|neoforge|BlockSmith'",
-    "  } |",
-    "  Select-Object ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath,WorkingSetSize |",
-    "  ConvertTo-Csv -NoTypeInformation"
-  ].join(" ");
-  const result = await captureProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], 15000);
+  // Full process list (same approach as BlockSmith). Kept on a slow timer so this is not a CPU hotspot.
+  const script = "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath,WorkingSetSize | Select-Object ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath,WorkingSetSize | ConvertTo-Csv -NoTypeInformation";
+  const result = await captureProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], 25000);
   return mapWindowsProcessRows(parseWmicCsv(result.output));
 }
 
@@ -522,9 +511,14 @@ function classifyGameProcess(proc, listeningPids = null) {
   const cmd = String(proc?.commandLine || "").toLowerCase();
   const exe = String(proc?.executablePath || "").toLowerCase();
   const hay = `${name} ${cmd} ${exe}`;
-  if (/shootergame|arkascended|asaapi|ark.*server|asaserver|arkdevkit/.test(hay)) return "ark";
-  if (/7daystodie|7dtd/.test(hay)) return "sevendays";
-  if (/\bicarus\b/.test(hay)) return "icarus";
+  // Avoid matching this manager (Ark-Server-GUI) or other panels as game RAM.
+  if (/ark-server-gui|ark server manager|blocksmith|minecraft-server-manager|icarus-server-manager/.test(hay)) {
+    return null;
+  }
+  // Names like IcarusServer-Win64-Shipping.exe need unanchored "icarus" (not \bicarus\b).
+  if (/shootergame|arkascended|asaapi|asaserver|arkdevkit|arkascendedserver|shootergameserver/.test(hay)) return "ark";
+  if (/7daystodie|7dtd|7daystodieserver/.test(hay)) return "sevendays";
+  if (/icarus/.test(hay)) return "icarus";
   if (/bedrock_server|minecraft\.windows|minecraftlauncher/.test(name)) return "minecraft";
   if (isJavaProcessName(name) || /[/\\]javaw?\.exe$/i.test(exe)) {
     if (looksLikeMinecraftText(hay)) return "minecraft";
