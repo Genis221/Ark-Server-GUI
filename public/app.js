@@ -312,7 +312,9 @@ const state = {
   busy: new Set(),
   repairPrompted: new Set(),
   consoleSource: null,
-  consoleServerId: null
+  consoleServerId: null,
+  iniConfigByServer: new Map(),
+  iniSaveTimers: new Map()
 };
 
 let currentUser = null;
@@ -637,6 +639,152 @@ function rconHint(server) {
   return `RCON ready on TCP ${rcon.port || "?"} · players auto-refresh`;
 }
 
+function iniFieldControl(def, value) {
+  const val = value ?? def.default ?? "";
+  const common = `data-ini-field="${escapeHtml(def.id)}" data-ini-type="${escapeHtml(def.type)}"`;
+  if (def.type === "bool" || (Array.isArray(def.options) && def.options.length)) {
+    const options = (def.options || [
+      { value: "True", label: "True" },
+      { value: "False", label: "False" }
+    ]).map(opt => (
+      `<option value="${escapeHtml(opt.value)}" ${String(val) === String(opt.value) ? "selected" : ""}>${escapeHtml(opt.label)}</option>`
+    )).join("");
+    return `<select ${common}>${options}</select>`;
+  }
+  if (def.type === "number") {
+    const min = def.min != null ? ` min="${def.min}"` : "";
+    const max = def.max != null ? ` max="${def.max}"` : "";
+    const step = def.step != null ? ` step="${def.step}"` : ` step="any"`;
+    return `<input type="number"${min}${max}${step} ${common} value="${escapeHtml(val)}" />`;
+  }
+  if (def.type === "password") {
+    return `<input type="password" autocomplete="new-password" ${common} value="${escapeHtml(val)}" />`;
+  }
+  return `<input type="text" ${common} value="${escapeHtml(val)}" />`;
+}
+
+function renderIniConfigPanel(server) {
+  const cached = state.iniConfigByServer.get(server.id);
+  if (!server.install) {
+    return `<p class="muted">Set an install location first to edit Game.ini / GameUserSettings.ini.</p>`;
+  }
+  if (!cached) {
+    return `
+      <p class="muted ini-config-status">Loading settings from INI files…</p>
+      <div class="action-row">
+        <button type="button" class="btn secondary" data-action="reload-ini-config">Reload</button>
+        <button type="button" class="btn secondary" data-action="open-game-ini">Open Game.ini</button>
+        <button type="button" class="btn secondary" data-action="open-gus-ini">Open GameUserSettings.ini</button>
+      </div>`;
+  }
+  if (cached.error) {
+    return `
+      <p class="ini-config-error">${escapeHtml(cached.error)}</p>
+      <div class="action-row">
+        <button type="button" class="btn secondary" data-action="reload-ini-config">Retry</button>
+        <button type="button" class="btn secondary" data-action="open-game-ini">Open Game.ini</button>
+        <button type="button" class="btn secondary" data-action="open-gus-ini">Open GameUserSettings.ini</button>
+      </div>`;
+  }
+
+  const groups = [];
+  const seen = new Set();
+  for (const def of cached.schema || []) {
+    if (seen.has(def.group)) continue;
+    seen.add(def.group);
+    groups.push(def.group);
+  }
+
+  const blocks = groups.map(group => {
+    const fields = (cached.schema || []).filter(def => def.group === group);
+    const fileHint = fields[0]?.file === "game" ? "Game.ini" : "GameUserSettings.ini";
+    return `
+      <div class="ini-group">
+        <div class="ini-group-head">
+          <h3>${escapeHtml(group)}</h3>
+          <span>${escapeHtml(fileHint)}</span>
+        </div>
+        <div class="ini-grid">
+          ${fields.map(def => `
+            <label class="field">
+              <span>${escapeHtml(def.label)}</span>
+              ${iniFieldControl(def, cached.values?.[def.id])}
+            </label>`).join("")}
+        </div>
+      </div>`;
+  }).join("");
+
+  const missing = [];
+  if (!cached.exists?.gameUserSettings) missing.push("GameUserSettings.ini");
+  if (!cached.exists?.game) missing.push("Game.ini");
+  const notice = missing.length
+    ? `<p class="muted">Missing on disk (will be created on save): ${missing.map(escapeHtml).join(", ")}</p>`
+    : `<p class="muted">Values load from and save to the server INI files. Restart the game server to apply many settings.</p>`;
+
+  return `
+    ${notice}
+    <div class="ini-groups">${blocks}</div>
+    <div class="action-row ini-config-actions">
+      <button type="button" class="btn secondary" data-action="reload-ini-config">Reload from disk</button>
+      <button type="button" class="btn secondary" data-action="open-game-ini">Open Game.ini</button>
+      <button type="button" class="btn secondary" data-action="open-gus-ini">Open GameUserSettings.ini</button>
+      <span class="ini-save-status" data-ini-save-status>${escapeHtml(cached.saveStatus || "")}</span>
+    </div>`;
+}
+
+async function loadIniConfig(serverId, { force = false } = {}) {
+  const server = state.servers.find(s => s.id === serverId);
+  if (!server?.install) return;
+  if (!force && state.iniConfigByServer.has(serverId) && !state.iniConfigByServer.get(serverId)?.error) {
+    return state.iniConfigByServer.get(serverId);
+  }
+  try {
+    const data = await api(`/api/servers/${serverId}/ini-config`);
+    state.iniConfigByServer.set(serverId, { ...data, saveStatus: "" });
+  } catch (err) {
+    state.iniConfigByServer.set(serverId, { error: err.message || "Could not load INI settings" });
+  }
+  const panel = workspace.querySelector(`[data-ini-config="${serverId}"]`);
+  if (panel) panel.innerHTML = renderIniConfigPanel(server);
+  return state.iniConfigByServer.get(serverId);
+}
+
+function scheduleIniSave(serverId, fieldId, value) {
+  const cached = state.iniConfigByServer.get(serverId);
+  if (!cached || cached.error) return;
+  cached.values = { ...(cached.values || {}), [fieldId]: value };
+  cached.saveStatus = "Saving…";
+  const status = workspace.querySelector(`[data-ini-config="${serverId}"] [data-ini-save-status]`);
+  if (status) status.textContent = "Saving…";
+  if (state.iniSaveTimers.has(serverId)) clearTimeout(state.iniSaveTimers.get(serverId));
+  state.iniSaveTimers.set(serverId, setTimeout(async () => {
+    state.iniSaveTimers.delete(serverId);
+    try {
+      const result = await api(`/api/servers/${serverId}/ini-config`, {
+        method: "PATCH",
+        body: { fields: { [fieldId]: value } }
+      });
+      state.iniConfigByServer.set(serverId, { ...result, saveStatus: "Saved" });
+      const panel = workspace.querySelector(`[data-ini-config="${serverId}"]`);
+      const active = document.activeElement;
+      const activeField = active?.dataset?.iniField;
+      if (panel && activeField !== fieldId) {
+        panel.innerHTML = renderIniConfigPanel(state.servers.find(s => s.id === serverId));
+      } else if (status) {
+        status.textContent = "Saved";
+      } else if (panel) {
+        const el = panel.querySelector("[data-ini-save-status]");
+        if (el) el.textContent = "Saved";
+      }
+    } catch (err) {
+      if (cached) cached.saveStatus = err.message || "Save failed";
+      const el = workspace.querySelector(`[data-ini-config="${serverId}"] [data-ini-save-status]`);
+      if (el) el.textContent = err.message || "Save failed";
+      toast(err.message || "Could not save INI setting", "error");
+    }
+  }, 450));
+}
+
 function renderServer(server) {
   if (!server) {
     workspace.innerHTML = `<div class="empty-view"><p>No server profiles yet.</p></div>`;
@@ -742,10 +890,9 @@ function renderServer(server) {
           <section class="section ${open("config")}" data-section="config">
             <button type="button" class="section-toggle"><span class="chev">▶</span> Server Configuration</button>
             <div class="section-body">
-            <div class="action-row">
-              <button type="button" class="btn secondary" data-action="open-game-ini">Edit Game.ini</button>
-              <button type="button" class="btn secondary" data-action="open-gus-ini">Edit GameUserSettings.ini</button>
-            </div>
+              <div class="ini-config" data-ini-config="${server.id}">
+                ${renderIniConfigPanel(server)}
+              </div>
             </div>
           </section>
 
@@ -822,6 +969,9 @@ function renderServer(server) {
   `;
 
   connectConsole(server.id);
+  if (state.openSections.has(`${server.id}:config`)) {
+    loadIniConfig(server.id).catch(() => {});
+  }
 }
 
 function toTimeInput(value) {
@@ -946,8 +1096,14 @@ async function refreshState({ silent = false } = {}) {
     const focusKey = prevFocus?.dataset?.field
       ? `${prevFocus.closest("[data-server-id]")?.dataset.serverId}:${prevFocus.dataset.field}:${prevFocus.dataset.index ?? ""}`
       : null;
+    const iniFocus = prevFocus?.dataset?.iniField
+      ? `${prevFocus.closest("[data-server-id]")?.dataset.serverId}:${prevFocus.dataset.iniField}`
+      : null;
     const selectionStart = prevFocus?.selectionStart;
     const selectionEnd = prevFocus?.selectionEnd;
+    const keepForm = Boolean(
+      (focusKey || iniFocus) && prevFocus && ["INPUT", "SELECT", "TEXTAREA"].includes(prevFocus.tagName)
+    );
 
     state.servers = data.servers || [];
     state.activity = data.activity || [];
@@ -961,7 +1117,7 @@ async function refreshState({ silent = false } = {}) {
     // Keep the live console mounted — only refresh chrome/stats on poll
     const page = workspace.querySelector(`[data-server-id="${state.activeId}"]`);
     const consoleMounted = Boolean(page && document.getElementById("console-output"));
-    if (consoleMounted || (focusKey && prevFocus && ["INPUT", "SELECT", "TEXTAREA"].includes(prevFocus.tagName))) {
+    if (consoleMounted || keepForm) {
       renderTabs();
       updateLiveStats(activeServer());
       const hint = document.querySelector(".console-hint");
@@ -978,6 +1134,15 @@ async function refreshState({ silent = false } = {}) {
           ? `[data-server-id="${id}"] [data-field="${field}"][data-index="${index}"]`
           : `[data-server-id="${id}"] [data-field="${field}"]`
       );
+      if (el) {
+        el.focus();
+        if (typeof selectionStart === "number" && el.setSelectionRange) {
+          try { el.setSelectionRange(selectionStart, selectionEnd); } catch { /* ignore */ }
+        }
+      }
+    } else if (iniFocus) {
+      const [id, field] = iniFocus.split(":");
+      const el = workspace.querySelector(`[data-server-id="${id}"] [data-ini-field="${field}"]`);
       if (el) {
         el.focus();
         if (typeof selectionStart === "number" && el.setSelectionRange) {
@@ -1501,9 +1666,13 @@ workspace.addEventListener("click", async event => {
     const server = activeServer();
     if (!server || !key) return;
     const full = `${server.id}:${key}`;
-    if (state.openSections.has(full)) state.openSections.delete(full);
-    else state.openSections.add(full);
-    section.classList.toggle("open");
+    const opening = !state.openSections.has(full);
+    if (opening) state.openSections.add(full);
+    else state.openSections.delete(full);
+    section.classList.toggle("open", opening);
+    if (opening && key === "config") {
+      loadIniConfig(server.id).catch(err => toast(err.message, "error"));
+    }
     return;
   }
 
@@ -1513,6 +1682,11 @@ workspace.addEventListener("click", async event => {
   if (!server) return;
 
   try {
+    if (action === "reload-ini-config") {
+      await loadIniConfig(server.id, { force: true });
+      toast("Reloaded INI settings");
+      return;
+    }
     if (action === "toggle") {
       if (String(server.status).toLowerCase() === "running") {
         await withBusy(server.id, async () => {
@@ -1790,6 +1964,11 @@ workspace.addEventListener("input", event => {
   const server = activeServer();
   if (!server) return;
 
+  if (el.dataset.iniField) {
+    scheduleIniSave(server.id, el.dataset.iniField, el.value);
+    return;
+  }
+
   if (el.closest("[data-launch-builder]") && el.hasAttribute("data-launch")) {
     syncLaunchBuilderToArgs(server.id);
     return;
@@ -1820,6 +1999,10 @@ workspace.addEventListener("change", event => {
   const el = event.target;
   const server = activeServer();
   if (!server) return;
+  if (el.dataset.iniField) {
+    scheduleIniSave(server.id, el.dataset.iniField, el.type === "checkbox" ? (el.checked ? "True" : "False") : el.value);
+    return;
+  }
   if (el.closest("[data-launch-builder]") && el.hasAttribute("data-launch")) {
     syncLaunchBuilderToArgs(server.id);
   }

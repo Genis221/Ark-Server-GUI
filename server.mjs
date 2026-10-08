@@ -274,6 +274,176 @@ function savedArksPath(server) {
   return path.join(server.install, "ShooterGame", "Saved", "SavedArks");
 }
 
+const BOOL_OPTIONS = [
+  { value: "True", label: "True" },
+  { value: "False", label: "False" }
+];
+
+/** Curated ASA settings shown in Server Configuration (GameUserSettings.ini + Game.ini). */
+const SERVER_INI_SCHEMA = [
+  // Session / access — GameUserSettings.ini
+  { id: "SessionName", file: "gus", section: "SessionSettings", key: "SessionName", type: "text", group: "Session", label: "Session name", default: "" },
+  { id: "ServerPassword", file: "gus", section: "ServerSettings", key: "ServerPassword", type: "text", group: "Session", label: "Server password", default: "" },
+  { id: "ServerAdminPassword", file: "gus", section: "ServerSettings", key: "ServerAdminPassword", type: "password", group: "Session", label: "Admin password", default: "" },
+  { id: "RCONEnabled", file: "gus", section: "ServerSettings", key: "RCONEnabled", type: "bool", group: "Session", label: "RCON enabled", default: "True", options: BOOL_OPTIONS },
+  { id: "RCONPort", file: "gus", section: "ServerSettings", key: "RCONPort", type: "number", group: "Session", label: "RCON port", default: "27020", min: 1, max: 65535, step: 1 },
+
+  // General server — GameUserSettings.ini
+  { id: "ShowMapPlayerLocation", file: "gus", section: "ServerSettings", key: "ShowMapPlayerLocation", type: "bool", group: "General", label: "Show map player location", default: "True", options: BOOL_OPTIONS },
+  { id: "AllowThirdPersonPlayer", file: "gus", section: "ServerSettings", key: "AllowThirdPersonPlayer", type: "bool", group: "General", label: "Allow third person", default: "True", options: BOOL_OPTIONS },
+  { id: "ServerCrosshair", file: "gus", section: "ServerSettings", key: "ServerCrosshair", type: "bool", group: "General", label: "Crosshair", default: "True", options: BOOL_OPTIONS },
+  { id: "AllowHitMarkers", file: "gus", section: "ServerSettings", key: "AllowHitMarkers", type: "bool", group: "General", label: "Hit markers", default: "True", options: BOOL_OPTIONS },
+  { id: "AlwaysAllowStructurePickup", file: "gus", section: "ServerSettings", key: "AlwaysAllowStructurePickup", type: "bool", group: "General", label: "Always allow structure pickup", default: "False", options: BOOL_OPTIONS },
+  { id: "OverrideOfficialDifficulty", file: "gus", section: "ServerSettings", key: "OverrideOfficialDifficulty", type: "number", group: "General", label: "Override official difficulty", default: "5", min: 0, max: 100, step: 0.1 },
+  { id: "DifficultyOffset", file: "gus", section: "ServerSettings", key: "DifficultyOffset", type: "number", group: "General", label: "Difficulty offset", default: "1", min: 0, max: 10, step: 0.01 },
+  { id: "StartTimeHour", file: "gus", section: "ServerSettings", key: "StartTimeHour", type: "number", group: "General", label: "Start time hour (-1 = random)", default: "-1", min: -1, max: 24, step: 1 },
+  { id: "AutoSavePeriodMinutes", file: "gus", section: "ServerSettings", key: "AutoSavePeriodMinutes", type: "number", group: "General", label: "Auto-save period (minutes)", default: "15", min: 1, max: 120, step: 1 },
+  { id: "KickIdlePlayersPeriod", file: "gus", section: "ServerSettings", key: "KickIdlePlayersPeriod", type: "number", group: "General", label: "Kick idle players (seconds)", default: "3600", min: 0, max: 86400, step: 1 },
+  { id: "MaxTamedDinos", file: "gus", section: "ServerSettings", key: "MaxTamedDinos", type: "number", group: "General", label: "Max tamed dinos", default: "5000", min: 0, max: 100000, step: 1 },
+  { id: "TheMaxStructuresInRange", file: "gus", section: "ServerSettings", key: "TheMaxStructuresInRange", type: "number", group: "General", label: "Max structures in range", default: "10500", min: 0, max: 200000, step: 1 },
+  { id: "ItemStackSizeMultiplier", file: "gus", section: "ServerSettings", key: "ItemStackSizeMultiplier", type: "number", group: "General", label: "Item stack size multiplier", default: "1", min: 0, max: 100, step: 0.1 },
+  { id: "StructurePickupTimeAfterPlacement", file: "gus", section: "ServerSettings", key: "StructurePickupTimeAfterPlacement", type: "number", group: "General", label: "Structure pickup time after place", default: "30", min: 0, max: 3600, step: 1 },
+  { id: "StructurePickupHoldDuration", file: "gus", section: "ServerSettings", key: "StructurePickupHoldDuration", type: "number", group: "General", label: "Structure pickup hold duration", default: "0.5", min: 0, max: 30, step: 0.1 },
+
+  // Rates / gameplay — Game.ini
+  { id: "XP_Kill", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "KillXPMultiplier", type: "number", group: "Rates", label: "Kill XP multiplier", default: "1", min: 0, max: 100, step: 0.1 },
+  { id: "XP_Harvest", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "HarvestXPMultiplier", type: "number", group: "Rates", label: "Harvest XP multiplier", default: "1", min: 0, max: 100, step: 0.1 },
+  { id: "XP_Craft", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "CraftXPMultiplier", type: "number", group: "Rates", label: "Craft XP multiplier", default: "1", min: 0, max: 100, step: 0.1 },
+  { id: "XP_Generic", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "GenericXPMultiplier", type: "number", group: "Rates", label: "Generic XP multiplier", default: "1", min: 0, max: 100, step: 0.1 },
+  { id: "MatingIntervalMultiplier", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "MatingIntervalMultiplier", type: "number", group: "Rates", label: "Mating interval multiplier", default: "1", min: 0, max: 100, step: 0.01 },
+  { id: "EggHatchSpeedMultiplier", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "EggHatchSpeedMultiplier", type: "number", group: "Rates", label: "Egg hatch speed multiplier", default: "1", min: 0, max: 1000, step: 0.1 },
+  { id: "BabyMatureSpeedMultiplier", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "BabyMatureSpeedMultiplier", type: "number", group: "Rates", label: "Baby mature speed multiplier", default: "1", min: 0, max: 1000, step: 0.1 },
+  { id: "BabyCuddleIntervalMultiplier", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "BabyCuddleIntervalMultiplier", type: "number", group: "Rates", label: "Baby cuddle interval multiplier", default: "1", min: 0, max: 100, step: 0.01 },
+  { id: "CropGrowthSpeedMultiplier", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "CropGrowthSpeedMultiplier", type: "number", group: "Rates", label: "Crop growth speed multiplier", default: "1", min: 0, max: 100, step: 0.1 },
+  { id: "LayEggIntervalMultiplier", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "LayEggIntervalMultiplier", type: "number", group: "Rates", label: "Lay egg interval multiplier", default: "1", min: 0, max: 100, step: 0.01 },
+  { id: "FuelConsumptionIntervalMultiplier", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "FuelConsumptionIntervalMultiplier", type: "number", group: "Rates", label: "Fuel consumption interval multiplier", default: "1", min: 0, max: 100, step: 0.01 },
+  { id: "SupplyCrateLootQualityMultiplier", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "SupplyCrateLootQualityMultiplier", type: "number", group: "Rates", label: "Supply crate loot quality", default: "1", min: 0, max: 100, step: 0.1 },
+  { id: "MaxPersonalTamedDinos", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "MaxPersonalTamedDinos", type: "number", group: "Rates", label: "Max personal tamed dinos", default: "0", min: 0, max: 100000, step: 1 },
+  { id: "MaxNumberOfPlayersInTribe", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "MaxNumberOfPlayersInTribe", type: "number", group: "Rates", label: "Max players in tribe (0 = unlimited)", default: "0", min: 0, max: 500, step: 1 },
+
+  // Toggles — Game.ini
+  { id: "bDisableStructurePlacementCollision", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "bDisableStructurePlacementCollision", type: "bool", group: "Rules", label: "Disable structure placement collision", default: "False", options: BOOL_OPTIONS },
+  { id: "bAllowUnlimitedRespecs", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "bAllowUnlimitedRespecs", type: "bool", group: "Rules", label: "Allow unlimited respecs", default: "False", options: BOOL_OPTIONS },
+  { id: "bAllowFlyerSpeedLeveling", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "bAllowFlyerSpeedLeveling", type: "bool", group: "Rules", label: "Allow flyer speed leveling", default: "False", options: BOOL_OPTIONS },
+  { id: "bAllowSpeedLeveling", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "bAllowSpeedLeveling", type: "bool", group: "Rules", label: "Allow speed leveling", default: "False", options: BOOL_OPTIONS },
+  { id: "bPvEAllowTribeWar", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "bPvEAllowTribeWar", type: "bool", group: "Rules", label: "Allow tribe war (PvE)", default: "True", options: BOOL_OPTIONS },
+  { id: "bDisableFriendlyFire", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "bDisableFriendlyFire", type: "bool", group: "Rules", label: "Disable friendly fire", default: "False", options: BOOL_OPTIONS },
+  { id: "bUseCorpseLocator", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "bUseCorpseLocator", type: "bool", group: "Rules", label: "Corpse locator", default: "True", options: BOOL_OPTIONS },
+  { id: "bAllowCustomRecipes", file: "game", section: "/Script/ShooterGame.ShooterGameMode", key: "bAllowCustomRecipes", type: "bool", group: "Rules", label: "Allow custom recipes", default: "True", options: BOOL_OPTIONS }
+];
+
+function parseIniFile(raw) {
+  const sections = {};
+  let current = "";
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith(";") || trimmed.startsWith("#")) continue;
+    const sec = trimmed.match(/^\[([^\]]+)\]$/);
+    if (sec) {
+      current = sec[1];
+      if (!sections[current]) sections[current] = {};
+      continue;
+    }
+    if (!current) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq < 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim();
+    if (!key) continue;
+    sections[current][key] = value;
+  }
+  return sections;
+}
+
+function iniSectionGet(sections, sectionName, key) {
+  const wantedSec = String(sectionName || "").toLowerCase();
+  const wantedKey = String(key || "").toLowerCase();
+  for (const [sec, values] of Object.entries(sections || {})) {
+    if (sec.toLowerCase() !== wantedSec) continue;
+    for (const [k, v] of Object.entries(values || {})) {
+      if (k.toLowerCase() === wantedKey) return String(v ?? "");
+    }
+  }
+  return null;
+}
+
+function normalizeIniBool(value, fallback = "False") {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(raw)) return "True";
+  if (["false", "0", "no", "off"].includes(raw)) return "False";
+  return fallback;
+}
+
+function formatIniFieldValue(def, raw) {
+  if (def.type === "bool") return normalizeIniBool(raw, def.default || "False");
+  if (raw == null || raw === "") return def.default ?? "";
+  return String(raw);
+}
+
+async function readServerIniConfig(server) {
+  if (!server?.install) {
+    throw Object.assign(new Error("Install location is not set"), { status: 400 });
+  }
+  const gusPath = gusIniPath(server);
+  const gamePath = gameIniPath(server);
+  const gusExists = await pathExists(gusPath);
+  const gameExists = await pathExists(gamePath);
+  const gus = parseIniFile(gusExists ? await readFile(gusPath, "utf8") : "");
+  const game = parseIniFile(gameExists ? await readFile(gamePath, "utf8") : "");
+  const values = {};
+  for (const def of SERVER_INI_SCHEMA) {
+    const sections = def.file === "game" ? game : gus;
+    const found = iniSectionGet(sections, def.section, def.key);
+    values[def.id] = formatIniFieldValue(def, found);
+  }
+  return {
+    schema: SERVER_INI_SCHEMA.map(({ id, file, section, key, type, group, label, default: defVal, options, min, max, step }) => ({
+      id, file, section, key, type, group, label, default: defVal, options, min, max, step
+    })),
+    values,
+    paths: { gameUserSettings: gusPath, game: gamePath },
+    exists: { gameUserSettings: gusExists, game: gameExists }
+  };
+}
+
+async function writeServerIniConfig(server, incoming = {}) {
+  if (!server?.install) {
+    throw Object.assign(new Error("Install location is not set"), { status: 400 });
+  }
+  const byFileSection = new Map();
+  const applied = {};
+  for (const def of SERVER_INI_SCHEMA) {
+    if (!Object.prototype.hasOwnProperty.call(incoming, def.id)) continue;
+    let value = incoming[def.id];
+    if (def.type === "bool") value = normalizeIniBool(value, def.default || "False");
+    else if (def.type === "number") {
+      const num = Number(value);
+      if (!Number.isFinite(num)) {
+        throw Object.assign(new Error(`${def.label} must be a number`), { status: 400 });
+      }
+      value = String(value).trim();
+    } else {
+      value = String(value ?? "").trim();
+    }
+    const fileKey = def.file === "game" ? "game" : "gus";
+    const mapKey = `${fileKey}\0${def.section}`;
+    if (!byFileSection.has(mapKey)) byFileSection.set(mapKey, { fileKey, section: def.section, values: {} });
+    byFileSection.get(mapKey).values[def.key] = value;
+    applied[def.id] = value;
+  }
+  for (const entry of byFileSection.values()) {
+    const iniPath = entry.fileKey === "game" ? gameIniPath(server) : gusIniPath(server);
+    await upsertIniSectionKeys(iniPath, entry.section, entry.values);
+  }
+  if (applied.SessionName != null && applied.SessionName !== "") {
+    await updateSessionName(gusIniPath(server), applied.SessionName);
+  }
+  if (applied.RCONEnabled != null || applied.RCONPort != null || applied.ServerAdminPassword != null) {
+    rconPublicCache.delete(server.id);
+  }
+  return readServerIniConfig(server);
+}
+
 function isLoopbackRequest(req) {
   const address = req.socket.remoteAddress || "";
   return address === "127.0.0.1" || address === "::1" || address.startsWith("::ffff:127.");
@@ -2733,6 +2903,16 @@ async function handleApi(req, res, url) {
       scheduleSave();
     }
     return sendJson(res, 200, { ...publicServer(server), firewallStatus: status });
+  }
+  if (method === "GET" && action === "ini-config") {
+    return sendJson(res, 200, await readServerIniConfig(server));
+  }
+  if ((method === "PUT" || method === "PATCH") && action === "ini-config") {
+    const body = (await readBody(req)) || {};
+    const fields = body.fields && typeof body.fields === "object" ? body.fields : body;
+    const result = await writeServerIniConfig(server, fields);
+    addActivity(`Updated INI settings for ${server.profile}`, "info");
+    return sendJson(res, 200, result);
   }
   if (method === "POST" && action === "open-ini") {
     const body = (await readBody(req)) || {};
