@@ -1014,13 +1014,29 @@ function formatRamAmount(bytes) {
   return `${gib} GB`;
 }
 
+function formatDiskRate(bytesPerSecond) {
+  const bytes = Math.max(0, Number(bytesPerSecond) || 0);
+  const mib = bytes / (1024 ** 2);
+  if (mib >= 0.1 || bytes === 0) {
+    const digits = mib >= 100 ? 0 : (mib >= 10 ? 1 : 2);
+    return `${mib.toFixed(digits)} MB/s`;
+  }
+  return `${(bytes / 1024).toFixed(1)} KB/s`;
+}
+
 function updateHostMeters(resources) {
   const cpuLabel = document.getElementById("host-cpu-label");
   const cpuBar = document.getElementById("host-cpu-bar");
   const cpuDetail = document.getElementById("host-cpu-detail");
+  const diskTitle = document.getElementById("host-disk-title");
+  const diskLabel = document.getElementById("host-disk-label");
+  const diskBar = document.getElementById("host-disk-bar");
+  const diskDetail = document.getElementById("host-disk-detail");
+  const diskActivity = document.getElementById("host-disk-activity");
   const ramLabel = document.getElementById("host-ram-label");
   const ramDetail = document.getElementById("host-ram-detail");
   const cpuMeter = document.querySelector('.host-meter[data-meter="cpu"]');
+  const diskMeter = document.querySelector('.host-meter[data-meter="disk"]');
   const ramMeter = document.querySelector('.host-meter[data-meter="ram"]');
   if (!cpuLabel || !resources) return;
 
@@ -1041,6 +1057,32 @@ function updateHostMeters(resources) {
   }
   if (cpuDetail) {
     cpuDetail.textContent = resources.cpuModel || (ghz ? `${ghz} CPU` : "CPU");
+  }
+
+  const diskPct = Number(resources.diskUsedPercent);
+  if (diskTitle) {
+    diskTitle.textContent = resources.diskLabel ? `Disk (${resources.diskLabel})` : "Disk";
+  }
+  if (diskLabel) {
+    diskLabel.textContent = resources.diskUsedLabel && resources.diskTotalLabel
+      ? `${resources.diskUsedLabel} / ${resources.diskTotalLabel}`
+      : "—";
+  }
+  if (diskBar) {
+    const pct = Number.isFinite(diskPct) ? Math.max(0, Math.min(100, diskPct)) : 0;
+    diskBar.style.width = `${pct}%`;
+    if (diskMeter) diskMeter.dataset.level = meterLevel(pct);
+  }
+  if (diskDetail) {
+    diskDetail.textContent = resources.diskFreeLabel
+      ? `${resources.diskFreeLabel} available · ${diskPct.toFixed(diskPct >= 10 ? 0 : 1)}% used`
+      : "Drive information unavailable";
+  }
+  if (diskActivity) {
+    const activity = Number(resources.diskActivityPercent);
+    diskActivity.textContent = Number.isFinite(activity)
+      ? `Activity ${activity.toFixed(activity >= 10 ? 0 : 1)}% · R ${formatDiskRate(resources.diskReadBytesPerSec)} · W ${formatDiskRate(resources.diskWriteBytesPerSec)}`
+      : "Activity data loading…";
   }
 
   const ramPct = Number(resources.ramUsedPercent);

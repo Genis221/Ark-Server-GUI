@@ -16,6 +16,7 @@ import {
   readdir,
   rm,
   stat,
+  statfs,
   writeFile
 } from "node:fs/promises";
 import { createAuthController } from "./auth.mjs";
@@ -480,6 +481,9 @@ let cachedRamSpeedMHz = null;
 let ramSpeedProbe = null;
 let cachedRamBreakdown = null;
 let ramBreakdownRunning = false;
+let cachedDiskUsage = null;
+let cachedDiskActivity = null;
+let diskActivityProbeRunning = false;
 
 function readCpuTimes() {
   let idle = 0;
@@ -544,6 +548,61 @@ function ensureRamSpeedProbe() {
   ramSpeedProbe = probeRamSpeedMHz()
     .then(mhz => { cachedRamSpeedMHz = mhz; })
     .catch(() => { cachedRamSpeedMHz = null; });
+}
+
+async function refreshDiskUsage() {
+  try {
+    const mount = path.parse(ROOT).root || ROOT;
+    const info = await statfs(mount);
+    const blockSize = Number(info.bsize) || 0;
+    const totalBytes = Math.max(0, (Number(info.blocks) || 0) * blockSize);
+    const freeBlocks = Number(info.bavail ?? info.bfree) || 0;
+    const freeBytes = Math.max(0, freeBlocks * blockSize);
+    const usedBytes = Math.max(0, totalBytes - freeBytes);
+    const label = mount.replace(/[\\/]+$/, "") || mount;
+    cachedDiskUsage = {
+      diskMount: mount,
+      diskLabel: label,
+      diskTotalBytes: totalBytes,
+      diskUsedBytes: usedBytes,
+      diskFreeBytes: freeBytes,
+      diskUsedPercent: totalBytes ? Math.round((usedBytes / totalBytes) * 1000) / 10 : 0,
+      diskTotalLabel: formatBytes(totalBytes),
+      diskUsedLabel: formatBytes(usedBytes),
+      diskFreeLabel: formatBytes(freeBytes)
+    };
+  } catch {
+    cachedDiskUsage = null;
+  }
+  return cachedDiskUsage;
+}
+
+async function refreshDiskActivity() {
+  if (diskActivityProbeRunning || process.platform !== "win32") return cachedDiskActivity;
+  diskActivityProbeRunning = true;
+  try {
+    const drive = cachedDiskUsage?.diskLabel || path.parse(ROOT).root.replace(/[\\/]+$/, "");
+    const safeDrive = String(drive || "").replace(/'/g, "''");
+    const script = `$d = Get-CimInstance Win32_PerfFormattedData_PerfDisk_LogicalDisk -Filter "Name='${safeDrive}'" -ErrorAction Stop; if ($null -eq $d) { exit 1 }; [pscustomobject]@{ PercentDiskTime=[double]$d.PercentDiskTime; DiskBytesPerSec=[double]$d.DiskBytesPerSec; DiskReadBytesPerSec=[double]$d.DiskReadBytesPerSec; DiskWriteBytesPerSec=[double]$d.DiskWriteBytesPerSec } | ConvertTo-Json -Compress`;
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      { windowsHide: true, timeout: 5000, maxBuffer: 256 * 1024 }
+    );
+    const sample = JSON.parse(String(stdout || "").trim());
+    cachedDiskActivity = {
+      diskActivityPercent: Math.max(0, Math.min(100, Number(sample.PercentDiskTime) || 0)),
+      diskBytesPerSec: Math.max(0, Number(sample.DiskBytesPerSec) || 0),
+      diskReadBytesPerSec: Math.max(0, Number(sample.DiskReadBytesPerSec) || 0),
+      diskWriteBytesPerSec: Math.max(0, Number(sample.DiskWriteBytesPerSec) || 0)
+    };
+    if (cachedHostResources) Object.assign(cachedHostResources, cachedDiskActivity);
+  } catch {
+    /* Keep the last good activity sample if a performance-counter read briefly fails. */
+  } finally {
+    diskActivityProbeRunning = false;
+  }
+  return cachedDiskActivity;
 }
 
 async function captureProcess(command, args, timeoutMs = 20000) {
@@ -800,7 +859,9 @@ function refreshHostResources() {
     ramFreeLabel: formatBytes(freeMem),
     ramSpeedMHz: cachedRamSpeedMHz,
     ramSpeedLabel,
-    ramSegments: cachedRamBreakdown?.segments || []
+    ramSegments: cachedRamBreakdown?.segments || [],
+    ...(cachedDiskUsage || {}),
+    ...(cachedDiskActivity || {})
   };
   return cachedHostResources;
 }
@@ -3123,10 +3184,20 @@ async function main() {
   for (const server of state.servers) runtimeOf(server.id);
   await refreshAllRuntimes({ deep: false });
   scheduleRuntimeRefresh({ deep: true });
+  await refreshDiskUsage();
   refreshHostResources();
+  refreshDiskActivity().catch(() => {});
   syncManagerWindowsStartup().catch(err => console.warn("[startup]", err.message));
   setInterval(() => {
     try { refreshHostResources(); } catch { /* ignore */ }
+  }, 3000);
+
+  setInterval(() => {
+    refreshDiskUsage().catch(() => {});
+  }, 15000);
+
+  setInterval(() => {
+    refreshDiskActivity().catch(() => {});
   }, 3000);
 
   sampleHostRamBreakdown().catch(() => {});

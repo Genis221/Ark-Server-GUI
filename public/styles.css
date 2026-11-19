@@ -330,6 +330,11 @@ html[data-theme="light"] .ram-seg-other { background: linear-gradient(180deg, #8
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.host-disk-activity {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: normal;
+}
 .host-startup-line {
   display: flex;
   align-items: center;
