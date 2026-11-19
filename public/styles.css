@@ -155,6 +155,7 @@ button { cursor: pointer; }
   width: 100%;
   white-space: normal;
 }
+.tool-btn:is(a) { text-decoration: none; }
 .tool-btn:hover,
 .tool-btn:focus-visible {
   border-color: rgba(226,165,58,.45);
@@ -168,6 +169,15 @@ button { cursor: pointer; }
   background: linear-gradient(135deg, color-mix(in srgb, var(--gold) 24%, var(--panel-2)), color-mix(in srgb, var(--gold) 8%, var(--panel-solid)));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), 0 6px 18px rgba(0, 0, 0, .14);
 }
+.tool-btn-donate {
+  border-color: color-mix(in srgb, #ffc439 58%, var(--line));
+  background: linear-gradient(135deg, color-mix(in srgb, #ffc439 15%, var(--panel-2)), color-mix(in srgb, #0070ba 10%, var(--panel-solid)));
+}
+.tool-btn-donate:hover,
+.tool-btn-donate:focus-visible {
+  border-color: #ffc439;
+  background: linear-gradient(135deg, color-mix(in srgb, #ffc439 24%, var(--panel-2)), color-mix(in srgb, #0070ba 15%, var(--panel-solid)));
+}
 .tool-btn::before {
   color: var(--gold);
   font-size: 14px;
@@ -177,6 +187,7 @@ button { cursor: pointer; }
 #btn-restart-manager::before { content: "↻"; }
 #btn-install-app::before { content: "↓"; }
 #btn-copy-settings::before { content: "⇄"; }
+#btn-donate::before { content: "$"; font-weight: 800; }
 #btn-theme::before { content: "◐"; }
 #btn-info::before { content: "i"; font-family: Georgia, serif; font-weight: 700; }
 #btn-accounts::before { content: "♙"; }
@@ -1012,6 +1023,72 @@ html[data-theme="light"] .ram-seg-other { background: linear-gradient(180deg, #8
 .modal-body { padding: 22px; display: grid; gap: 12px; }
 .modal-body h2 { margin: 0; font-size: 20px; letter-spacing: -0.02em; }
 .modal-body p { margin: 0; line-height: 1.5; }
+.about-modal-body { width: min(520px, calc(100vw - 32px)); }
+.about-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 4px;
+}
+.about-mark {
+  border-radius: 13px;
+  object-fit: cover;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .24);
+}
+.about-kicker {
+  color: var(--gold);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.about-version { color: var(--muted); font-size: 11px; }
+.about-credit {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-2) 62%, transparent);
+}
+.about-credit span {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.about-credit strong { font-size: 15px; }
+.about-support {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, #ffc439 52%, var(--line));
+  border-radius: 12px;
+  background: linear-gradient(135deg, color-mix(in srgb, #ffc439 12%, var(--panel-solid)), var(--panel-solid));
+}
+.about-support p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.paypal-btn {
+  border-color: #e5ae24;
+  background: #ffc439;
+  color: #172c70;
+  white-space: nowrap;
+  text-decoration: none;
+  box-shadow: 0 6px 16px rgba(255, 196, 57, .16);
+}
+.paypal-btn:hover {
+  background: #ffd365;
+  color: #11245f;
+}
+.info-network {
+  padding-top: 2px;
+  font-size: 11px;
+}
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -1161,6 +1238,8 @@ html[data-theme="light"] .ram-seg-other { background: linear-gradient(180deg, #8
 @media (max-width: 720px) {
   .workspace { padding-left: 14px; padding-right: 14px; }
   .header-top, .grid-2, .stats { grid-template-columns: 1fr; }
+  .about-support { grid-template-columns: 1fr; }
+  .paypal-btn { width: 100%; }
 }
 
 /* Auth */

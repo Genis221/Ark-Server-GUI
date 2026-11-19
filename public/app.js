@@ -1515,7 +1515,7 @@ document.getElementById("btn-restart-manager").addEventListener("click", async (
 
 document.getElementById("btn-info").addEventListener("click", () => {
   const lans = (window.__arkHost?.lanAddresses || []).map(ip => `http://${ip}:${window.__arkHost.managerPort || 3220}`);
-  const p = infoDialog.querySelector(".muted");
+  const p = document.getElementById("info-network");
   if (p) {
     p.textContent = lans.length
       ? `Sign-in required. LAN examples: ${lans.join(" · ")}`

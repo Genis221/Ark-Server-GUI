@@ -39,6 +39,7 @@
           <button type="button" class="tool-btn tool-btn-wide tool-btn-primary" id="btn-restart-manager" title="Restart and update Server Manager">Restart/Update Server Manager</button>
           <button type="button" class="tool-btn tool-btn-wide" id="btn-install-app" hidden title="Install Ark Manager on this device">Install App</button>
           <button type="button" class="tool-btn tool-btn-wide" id="btn-copy-settings" title="Copy settings between profiles">Copy Server Settings</button>
+          <a class="tool-btn tool-btn-wide tool-btn-donate" id="btn-donate" href="https://www.paypal.com/donate/?hosted_button_id=5GJEEPTJ6D9TJ" target="_blank" rel="noopener noreferrer" title="Support Ark Server Manager development with PayPal">Donate with PayPal</a>
           <div class="rail-tools-grid">
             <button type="button" class="tool-btn" id="btn-theme" title="Change to Light mode" aria-label="Change to Light mode">Change to Light mode</button>
             <button type="button" class="tool-btn" id="btn-info" title="About Ark Server Manager">About</button>
@@ -90,10 +91,28 @@
     </div>
 
     <dialog id="info-dialog" class="modal">
-      <div class="modal-body">
-        <h2>Ark Server Manager</h2>
-        <p>Web edition v1.0 — local control panel for ARK: Survival Ascended dedicated servers.</p>
-        <p class="muted">Sign-in protects the manager on your LAN. Use Accounts to change your password or (as admin) add operators. Use Start with Windows under Server Specs to launch at logon. On Android, use Install App or Chrome’s Add to Home Screen.</p>
+      <div class="modal-body about-modal-body">
+        <div class="about-heading">
+          <img class="about-mark" src="/ark-icon.jpg" alt="" width="48" height="48" />
+          <div>
+            <p class="about-kicker">ASA Control</p>
+            <h2>Ark Server Manager</h2>
+            <p class="about-version">Web edition v1.0</p>
+          </div>
+        </div>
+        <p>A local control panel for managing ARK: Survival Ascended dedicated servers.</p>
+        <div class="about-credit">
+          <span>Created and maintained by</span>
+          <strong>Dustin Romero</strong>
+        </div>
+        <div class="about-support">
+          <div>
+            <strong>Support continued development</strong>
+            <p>Donations help support the time spent building, maintaining, and improving Ark Server Manager.</p>
+          </div>
+          <a class="btn paypal-btn" href="https://www.paypal.com/donate/?hosted_button_id=5GJEEPTJ6D9TJ" target="_blank" rel="noopener noreferrer">Donate with PayPal</a>
+        </div>
+        <p class="muted info-network" id="info-network">Sign-in protects the manager on your LAN. Use Accounts to manage operators and Start with Windows to launch at logon.</p>
         <div class="modal-actions">
           <button type="button" class="btn secondary" data-close>Close</button>
         </div>
