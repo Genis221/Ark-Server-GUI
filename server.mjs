@@ -481,8 +481,8 @@ let cachedRamSpeedMHz = null;
 let ramSpeedProbe = null;
 let cachedRamBreakdown = null;
 let ramBreakdownRunning = false;
-let cachedDiskUsage = null;
-let cachedDiskActivity = null;
+let cachedDiskUsage = [];
+let cachedDiskActivity = {};
 let diskActivityProbeRunning = false;
 
 function readCpuTimes() {
@@ -550,30 +550,82 @@ function ensureRamSpeedProbe() {
     .catch(() => { cachedRamSpeedMHz = null; });
 }
 
-async function refreshDiskUsage() {
-  try {
-    const mount = path.parse(ROOT).root || ROOT;
-    const info = await statfs(mount);
-    const blockSize = Number(info.bsize) || 0;
-    const totalBytes = Math.max(0, (Number(info.blocks) || 0) * blockSize);
-    const freeBlocks = Number(info.bavail ?? info.bfree) || 0;
-    const freeBytes = Math.max(0, freeBlocks * blockSize);
-    const usedBytes = Math.max(0, totalBytes - freeBytes);
-    const label = mount.replace(/[\\/]+$/, "") || mount;
-    cachedDiskUsage = {
+function makeDiskUsage({ mount, label, volumeName = "", totalBytes, freeBytes }) {
+  const total = Math.max(0, Number(totalBytes) || 0);
+  const free = Math.max(0, Number(freeBytes) || 0);
+  const used = Math.max(0, total - free);
+  return {
       diskMount: mount,
       diskLabel: label,
-      diskTotalBytes: totalBytes,
-      diskUsedBytes: usedBytes,
-      diskFreeBytes: freeBytes,
-      diskUsedPercent: totalBytes ? Math.round((usedBytes / totalBytes) * 1000) / 10 : 0,
-      diskTotalLabel: formatBytes(totalBytes),
-      diskUsedLabel: formatBytes(usedBytes),
-      diskFreeLabel: formatBytes(freeBytes)
-    };
-  } catch {
-    cachedDiskUsage = null;
+      diskVolumeName: String(volumeName || ""),
+      diskTotalBytes: total,
+      diskUsedBytes: used,
+      diskFreeBytes: free,
+      diskUsedPercent: total ? Math.round((used / total) * 1000) / 10 : 0,
+      diskTotalLabel: formatBytes(total),
+      diskUsedLabel: formatBytes(used),
+      diskFreeLabel: formatBytes(free)
+  };
+}
+
+function combinedDiskStats() {
+  return cachedDiskUsage.map(disk => ({
+    ...disk,
+    ...(cachedDiskActivity[disk.diskLabel] || {})
+  }));
+}
+
+function diskResourcesSnapshot() {
+  const disks = combinedDiskStats();
+  const managerDrive = path.parse(ROOT).root.replace(/[\\/]+$/, "").toUpperCase();
+  const primary = disks.find(disk => String(disk.diskLabel).toUpperCase() === managerDrive) || disks[0] || {};
+  return { disks, ...primary };
+}
+
+async function refreshDiskUsage() {
+  let disks = [];
+  if (process.platform === "win32") {
+    try {
+      const script = `$items = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ Label=[string]$_.DeviceID; VolumeName=[string]$_.VolumeName; TotalBytes=[double]$_.Size; FreeBytes=[double]$_.FreeSpace } }); ConvertTo-Json -InputObject $items -Compress`;
+      const { stdout } = await execFileAsync(
+        "powershell.exe",
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        { windowsHide: true, timeout: 7000, maxBuffer: 512 * 1024 }
+      );
+      const parsed = JSON.parse(String(stdout || "[]").trim() || "[]");
+      const rows = Array.isArray(parsed) ? parsed : [parsed];
+      disks = rows
+        .filter(row => /^[a-z]:$/i.test(String(row?.Label || "")) && Number(row?.TotalBytes) > 0)
+        .map(row => makeDiskUsage({
+          mount: `${row.Label}\\`,
+          label: String(row.Label).toUpperCase(),
+          volumeName: row.VolumeName,
+          totalBytes: row.TotalBytes,
+          freeBytes: row.FreeBytes
+        }));
+    } catch {
+      /* Fall back to the manager's filesystem below. */
+    }
   }
+  if (!disks.length) {
+    try {
+      const mount = path.parse(ROOT).root || ROOT;
+      const info = await statfs(mount);
+      const blockSize = Number(info.bsize) || 0;
+      const totalBytes = Math.max(0, (Number(info.blocks) || 0) * blockSize);
+      const freeBlocks = Number(info.bavail ?? info.bfree) || 0;
+      const freeBytes = Math.max(0, freeBlocks * blockSize);
+      disks = [makeDiskUsage({
+        mount,
+        label: mount.replace(/[\\/]+$/, "") || mount,
+        totalBytes,
+        freeBytes
+      })];
+    } catch {
+      /* Keep the last good drive list if filesystem discovery briefly fails. */
+    }
+  }
+  if (disks.length) cachedDiskUsage = disks;
   return cachedDiskUsage;
 }
 
@@ -581,22 +633,23 @@ async function refreshDiskActivity() {
   if (diskActivityProbeRunning || process.platform !== "win32") return cachedDiskActivity;
   diskActivityProbeRunning = true;
   try {
-    const drive = cachedDiskUsage?.diskLabel || path.parse(ROOT).root.replace(/[\\/]+$/, "");
-    const safeDrive = String(drive || "").replace(/'/g, "''");
-    const script = `$d = Get-CimInstance Win32_PerfFormattedData_PerfDisk_LogicalDisk -Filter "Name='${safeDrive}'" -ErrorAction Stop; if ($null -eq $d) { exit 1 }; [pscustomobject]@{ PercentDiskTime=[double]$d.PercentDiskTime; DiskBytesPerSec=[double]$d.DiskBytesPerSec; DiskReadBytesPerSec=[double]$d.DiskReadBytesPerSec; DiskWriteBytesPerSec=[double]$d.DiskWriteBytesPerSec } | ConvertTo-Json -Compress`;
+    const script = `$items = @(Get-CimInstance Win32_PerfFormattedData_PerfDisk_LogicalDisk -ErrorAction Stop | Where-Object { $_.Name -match '^[A-Za-z]:$' } | ForEach-Object { [pscustomobject]@{ Label=[string]$_.Name; PercentDiskTime=[double]$_.PercentDiskTime; DiskBytesPerSec=[double]$_.DiskBytesPerSec; DiskReadBytesPerSec=[double]$_.DiskReadBytesPerSec; DiskWriteBytesPerSec=[double]$_.DiskWriteBytesPerSec } }); ConvertTo-Json -InputObject $items -Compress`;
     const { stdout } = await execFileAsync(
       "powershell.exe",
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
       { windowsHide: true, timeout: 5000, maxBuffer: 256 * 1024 }
     );
-    const sample = JSON.parse(String(stdout || "").trim());
-    cachedDiskActivity = {
-      diskActivityPercent: Math.max(0, Math.min(100, Number(sample.PercentDiskTime) || 0)),
-      diskBytesPerSec: Math.max(0, Number(sample.DiskBytesPerSec) || 0),
-      diskReadBytesPerSec: Math.max(0, Number(sample.DiskReadBytesPerSec) || 0),
-      diskWriteBytesPerSec: Math.max(0, Number(sample.DiskWriteBytesPerSec) || 0)
-    };
-    if (cachedHostResources) Object.assign(cachedHostResources, cachedDiskActivity);
+    const parsed = JSON.parse(String(stdout || "[]").trim() || "[]");
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    cachedDiskActivity = Object.fromEntries(rows
+      .filter(row => /^[a-z]:$/i.test(String(row?.Label || "")))
+      .map(row => [String(row.Label).toUpperCase(), {
+        diskActivityPercent: Math.max(0, Math.min(100, Number(row.PercentDiskTime) || 0)),
+        diskBytesPerSec: Math.max(0, Number(row.DiskBytesPerSec) || 0),
+        diskReadBytesPerSec: Math.max(0, Number(row.DiskReadBytesPerSec) || 0),
+        diskWriteBytesPerSec: Math.max(0, Number(row.DiskWriteBytesPerSec) || 0)
+      }]));
+    if (cachedHostResources) Object.assign(cachedHostResources, diskResourcesSnapshot());
   } catch {
     /* Keep the last good activity sample if a performance-counter read briefly fails. */
   } finally {
@@ -860,8 +913,7 @@ function refreshHostResources() {
     ramSpeedMHz: cachedRamSpeedMHz,
     ramSpeedLabel,
     ramSegments: cachedRamBreakdown?.segments || [],
-    ...(cachedDiskUsage || {}),
-    ...(cachedDiskActivity || {})
+    ...diskResourcesSnapshot()
   };
   return cachedHostResources;
 }

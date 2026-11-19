@@ -64,7 +64,10 @@
           </div>
           <div class="host-meter" data-meter="disk">
             <div class="host-meter-head">
-              <span id="host-disk-title">Disk</span>
+              <label class="host-disk-picker">
+                <span>Disk</span>
+                <select id="host-disk-select" aria-label="Drive to monitor"><option value="">—</option></select>
+              </label>
               <strong id="host-disk-label">—</strong>
             </div>
             <div class="host-meter-track"><i id="host-disk-bar" style="width:0%"></i></div>

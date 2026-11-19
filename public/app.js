@@ -1028,7 +1028,7 @@ function updateHostMeters(resources) {
   const cpuLabel = document.getElementById("host-cpu-label");
   const cpuBar = document.getElementById("host-cpu-bar");
   const cpuDetail = document.getElementById("host-cpu-detail");
-  const diskTitle = document.getElementById("host-disk-title");
+  const diskSelect = document.getElementById("host-disk-select");
   const diskLabel = document.getElementById("host-disk-label");
   const diskBar = document.getElementById("host-disk-bar");
   const diskDetail = document.getElementById("host-disk-detail");
@@ -1059,13 +1059,28 @@ function updateHostMeters(resources) {
     cpuDetail.textContent = resources.cpuModel || (ghz ? `${ghz} CPU` : "CPU");
   }
 
-  const diskPct = Number(resources.diskUsedPercent);
-  if (diskTitle) {
-    diskTitle.textContent = resources.diskLabel ? `Disk (${resources.diskLabel})` : "Disk";
+  const disks = Array.isArray(resources.disks) ? resources.disks : [];
+  let selectedDisk = disks.find(disk => disk.diskLabel === resources.diskLabel) || disks[0] || resources;
+  if (diskSelect && disks.length) {
+    const signature = disks.map(disk => `${disk.diskLabel}:${disk.diskVolumeName || ""}`).join("|");
+    const previous = diskSelect.value;
+    if (diskSelect.dataset.signature !== signature) {
+      diskSelect.replaceChildren(...disks.map(disk => {
+        const volume = String(disk.diskVolumeName || "").trim();
+        return new Option(volume ? `${disk.diskLabel} · ${volume}` : disk.diskLabel, disk.diskLabel);
+      }));
+      diskSelect.dataset.signature = signature;
+    }
+    const remembered = localStorage.getItem("ark-disk-drive") || "";
+    const preferred = [previous, remembered, resources.diskLabel, disks[0]?.diskLabel]
+      .find(label => disks.some(disk => disk.diskLabel === label));
+    if (preferred) diskSelect.value = preferred;
+    selectedDisk = disks.find(disk => disk.diskLabel === diskSelect.value) || selectedDisk;
   }
+  const diskPct = Number(selectedDisk.diskUsedPercent);
   if (diskLabel) {
-    diskLabel.textContent = resources.diskUsedLabel && resources.diskTotalLabel
-      ? `${resources.diskUsedLabel} / ${resources.diskTotalLabel}`
+    diskLabel.textContent = selectedDisk.diskUsedLabel && selectedDisk.diskTotalLabel
+      ? `${selectedDisk.diskUsedLabel} / ${selectedDisk.diskTotalLabel}`
       : "—";
   }
   if (diskBar) {
@@ -1074,14 +1089,14 @@ function updateHostMeters(resources) {
     if (diskMeter) diskMeter.dataset.level = meterLevel(pct);
   }
   if (diskDetail) {
-    diskDetail.textContent = resources.diskFreeLabel
-      ? `${resources.diskFreeLabel} available · ${diskPct.toFixed(diskPct >= 10 ? 0 : 1)}% used`
+    diskDetail.textContent = selectedDisk.diskFreeLabel && Number.isFinite(diskPct)
+      ? `${selectedDisk.diskFreeLabel} available · ${diskPct.toFixed(diskPct >= 10 ? 0 : 1)}% used`
       : "Drive information unavailable";
   }
   if (diskActivity) {
-    const activity = Number(resources.diskActivityPercent);
+    const activity = Number(selectedDisk.diskActivityPercent);
     diskActivity.textContent = Number.isFinite(activity)
-      ? `Activity ${activity.toFixed(activity >= 10 ? 0 : 1)}% · R ${formatDiskRate(resources.diskReadBytesPerSec)} · W ${formatDiskRate(resources.diskWriteBytesPerSec)}`
+      ? `Activity ${activity.toFixed(activity >= 10 ? 0 : 1)}% · R ${formatDiskRate(selectedDisk.diskReadBytesPerSec)} · W ${formatDiskRate(selectedDisk.diskWriteBytesPerSec)}`
       : "Activity data loading…";
   }
 
@@ -1509,6 +1524,11 @@ function applyTheme(theme) {
 }
 
 applyTheme(localStorage.getItem("ark-theme") === "light" ? "light" : "dark");
+
+document.getElementById("host-disk-select")?.addEventListener("change", event => {
+  localStorage.setItem("ark-disk-drive", event.target.value);
+  updateHostMeters(window.__arkHost?.resources);
+});
 
 document.getElementById("btn-start-with-windows")?.addEventListener("change", async event => {
   const enabled = Boolean(event.target.checked);
