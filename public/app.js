@@ -1007,6 +1007,13 @@ function meterLevel(percent) {
   return "ok";
 }
 
+function formatRamAmount(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return "—";
+  const gib = Math.round((value / (1024 ** 3)) * 10) / 10;
+  return `${gib} GB`;
+}
+
 function updateHostMeters(resources) {
   const cpuLabel = document.getElementById("host-cpu-label");
   const cpuBar = document.getElementById("host-cpu-bar");
@@ -1041,9 +1048,7 @@ function updateHostMeters(resources) {
   const ramTrack = document.getElementById("host-ram-track");
   const ramLegend = document.getElementById("host-ram-legend");
   if (ramLabel && Number.isFinite(ramPct)) {
-    ramLabel.textContent = ramSpeed
-      ? `${ramPct.toFixed(ramPct >= 10 ? 0 : 1)}% · ${ramSpeed}`
-      : `${ramPct.toFixed(ramPct >= 10 ? 0 : 1)}%`;
+    ramLabel.textContent = `${formatRamAmount(resources.ramUsedBytes)} / ${formatRamAmount(resources.ramTotalBytes)}`;
     // RAM uses per-game segment colors; keep level clear so CPU thresholds don't recolor it.
     if (ramMeter) ramMeter.dataset.level = "";
   }
@@ -1061,10 +1066,10 @@ function updateHostMeters(resources) {
     }
   }
   if (ramDetail) {
+    const percentLabel = `${ramPct.toFixed(ramPct >= 10 ? 0 : 1)}% used`;
     const parts = [
-      `${resources.ramUsedLabel || "—"} used`,
-      `${resources.ramFreeLabel || "—"} free`,
-      `${resources.ramTotalLabel || "—"} total`
+      `${formatRamAmount(resources.ramFreeBytes)} available`,
+      percentLabel
     ];
     if (ramSpeed) parts.push(ramSpeed);
     ramDetail.textContent = parts.join(" · ");
@@ -1480,9 +1485,9 @@ document.getElementById("btn-start-with-windows")?.addEventListener("change", as
 
 document.getElementById("btn-restart-manager").addEventListener("click", async () => {
   const ok = await confirmDanger(
-    "Restart Server Manager",
+    "Restart/Update Server Manager",
     "This restarts Ark Server Manager and checks GitHub for updates (same as Start Ark Manager.cmd). Your ARK game servers are left running. Continue?",
-    "Restart"
+    "Restart/Update"
   );
   if (!ok) return;
   const btn = document.getElementById("btn-restart-manager");
