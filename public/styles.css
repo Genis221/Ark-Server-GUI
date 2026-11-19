@@ -401,6 +401,17 @@ html[data-theme="light"] .ram-seg-other { background: linear-gradient(180deg, #8
   color: var(--muted);
   font-size: 11px;
 }
+.tab-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.tab-status .tab-ram {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .tab.active {
   background: var(--panel-solid);
   border-color: rgba(226, 165, 58, 0.7);

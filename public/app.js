@@ -547,6 +547,13 @@ function statusDisplay(server) {
   return { label: "Offline", tone: "bad" };
 }
 
+function serverRamLabel(server) {
+  const bytes = Number(server?.ramBytes) || 0;
+  if (bytes <= 0 || String(server?.status || "").toLowerCase() !== "running") return "";
+  const gib = bytes / (1024 ** 3);
+  return `${gib.toFixed(1)} GB RAM`;
+}
+
 function availabilityClass(value) {
   const v = String(value || "").toLowerCase();
   if (v === "online") return "good";
@@ -569,7 +576,10 @@ function renderTabs() {
       data-id="${server.id}" draggable="true" role="tab" aria-selected="${server.id === state.activeId}">
       <span class="tab-copy">
         <b>${escapeHtml(server.profile || "New Server")}</b>
-        <small>${escapeHtml(statusDisplay(server).label)}</small>
+        <span class="tab-status">
+          <small>${escapeHtml(statusDisplay(server).label)}</small>
+          ${serverRamLabel(server) ? `<small class="tab-ram">- ${escapeHtml(serverRamLabel(server))}</small>` : ""}
+        </span>
       </span>
       <span class="close" data-close="${server.id}" title="Remove">×</span>
     </button>

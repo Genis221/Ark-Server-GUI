@@ -217,6 +217,7 @@ function runtimeOf(id) {
       serverPingMs: null,
       maxPlayers: 70,
       pid: null,
+      ramBytes: 0,
       startedAt: 0,
       updating: false,
       needsRepair: false,
@@ -943,6 +944,7 @@ function publicServer(server, rcon = null) {
     serverPingMs: runtime.serverPingMs == null ? null : Number(runtime.serverPingMs),
     maxPlayers: runtime.maxPlayers || parseMaxPlayers(server.launchArgs),
     pid: runtime.pid,
+    ramBytes: Number(runtime.ramBytes) || 0,
     backupInProgress: Boolean(runtime.backupInProgress),
     updating: Boolean(runtime.updating),
     needsRepair: Boolean(runtime.needsRepair),
@@ -1713,7 +1715,7 @@ async function listArkProcesses() {
       [
         "-NoProfile",
         "-Command",
-        "Get-CimInstance Win32_Process -Filter \"Name='ArkAscendedServer.exe'\" | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress"
+        "Get-CimInstance Win32_Process -Filter \"Name='ArkAscendedServer.exe'\" | Select-Object ProcessId,ExecutablePath,WorkingSetSize | ConvertTo-Json -Compress"
       ],
       { windowsHide: true, timeout: 5000, maxBuffer: 2 * 1024 * 1024 }
     );
@@ -1725,7 +1727,8 @@ async function listArkProcesses() {
       .filter(r => r && r.ProcessId)
       .map(r => ({
         pid: Number(r.ProcessId),
-        exe: String(r.ExecutablePath || "")
+        exe: String(r.ExecutablePath || ""),
+        memoryBytes: Number(r.WorkingSetSize) || 0
       }));
   } catch {
     return [];
@@ -1799,6 +1802,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
   if (match) {
     runtime.status = "running";
     runtime.pid = match.pid;
+    runtime.ramBytes = Number(match.memoryBytes) || 0;
     if (!runtime.startedAt) runtime.startedAt = Date.now();
 
     if (!deep) {
@@ -1842,6 +1846,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
   } else {
     runtime.status = "stopped";
     runtime.pid = null;
+    runtime.ramBytes = 0;
     runtime.availability = "Offline";
     runtime.players = 0;
     runtime.playerNames = [];
@@ -2140,6 +2145,7 @@ async function stopServer(server, { copyLog = true } = {}) {
 
   runtime.status = "stopped";
   runtime.pid = null;
+  runtime.ramBytes = 0;
   runtime.startedAt = 0;
   runtime.availability = "Offline";
   runtime.players = 0;
